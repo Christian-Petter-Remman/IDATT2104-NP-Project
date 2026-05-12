@@ -1,6 +1,6 @@
 <template>
   <div id="app">
-    <div v-if="!store.connected" class="reconnect-banner">
+    <div v-if="store.nodeId && !store.connected" class="reconnect-banner">
       Reconnecting to node...
     </div>
 

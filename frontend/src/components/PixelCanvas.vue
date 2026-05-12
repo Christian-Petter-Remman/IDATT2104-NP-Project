@@ -77,8 +77,8 @@ function onMouseUp() { painting = false }
 function onMouseLeave() { painting = false }
 
 onMounted(render)
-watch(() => store.pixels, render, { deep: false })
-watch(() => store.cursors, render, { deep: false })
+watch(store.pixels, render)
+watch(store.cursors, render)
 </script>
 
 <style scoped>

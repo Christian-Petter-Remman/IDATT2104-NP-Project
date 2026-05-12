@@ -73,9 +73,15 @@ export const useCanvasStore = defineStore('canvas', {
     _applySnapshot(msg) {
       // pixels: [{x, y, color}] or object map
       this.pixels.clear()
-      const pixelList = Array.isArray(msg.pixels) ? msg.pixels : Object.values(msg.pixels ?? {})
-      for (const p of pixelList) {
-        this.pixels.set(`${p.x},${p.y}`, p.color)
+      if (Array.isArray(msg.pixels)) {
+        for (const p of msg.pixels) {
+          this.pixels.set(`${p.x},${p.y}`, p.color)
+        }
+      } else if (msg.pixels && typeof msg.pixels === 'object') {
+        // object keyed by "x,y" → [r,g,b,a]
+        for (const [key, color] of Object.entries(msg.pixels)) {
+          this.pixels.set(key, color)
+        }
       }
 
       // palette: [[r,g,b,a], ...]
