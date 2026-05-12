@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d54dc49c7757f91fbf8378c5574a16d07d5e5b3c32ac3e48d89c6d6b76d7dd63 # shrinks to a = VectorClock { clock: {} }, b = VectorClock { clock: {} }, c = VectorClock { clock: {} }
+cc ed56a4fe3c3f543f749a4d37b3ddef55adf2aed85217cb0834eb240a4e5f4987 # shrinks to a = VectorClock { clock: {} }
+cc aeeb900fd9cbec25fffa52563a26da540946545b42e397aa8902f5701d1230fe # shrinks to a = VectorClock { clock: {} }, b = VectorClock { clock: {} }
