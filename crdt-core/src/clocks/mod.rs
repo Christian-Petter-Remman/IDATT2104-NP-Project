@@ -2,36 +2,56 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use crate::traits::{Crdt, NodeId};
 
+/// Causality primitive used throughout the canvas CRDT.
+///
+/// Tracks the number of events seen from each node. A missing entry is
+/// equivalent to a count of zero, so `{A:1}` and `{A:1, B:0}` are equal.
+///
+/// Used directly by [`super::registers::MVRegister`] to detect concurrent
+/// writes, and as a Lamport timestamp source for [`super::registers::LWWRegister`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VectorClock {
     pub(crate) clock: HashMap<NodeId, u64>,
 }
 
+/// Result of comparing two [`VectorClock`]s under the causal partial order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClockOrder {
+    /// Every component of `self` is strictly ≤ the corresponding component of `other`,
+    /// and at least one is strictly less. `self` happened before `other`.
     Before,
+    /// Every component of `self` is ≥ the corresponding component of `other`,
+    /// and at least one is strictly greater. `self` happened after `other`.
     After,
+    /// All components are equal.
     Equal,
+    /// Neither clock dominates the other; the events are causally independent.
     Concurrent,
 }
 
 impl VectorClock {
+    /// Creates an empty clock (all components implicitly zero).
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Advances `node`'s component by one, recording a new local event.
     pub fn increment(&mut self, node: NodeId) {
         *self.clock.entry(node).or_insert(0) += 1;
     }
 
+    /// Returns the current component for `node`, or `0` if unseen.
     pub fn get(&self, node: &NodeId) -> u64 {
         *self.clock.get(node).unwrap_or(&0)
     }
 
+    /// Returns `max` over all components — used as a Lamport timestamp for
+    /// [`super::registers::LWWRegister`] tie-breaking.
     pub fn lamport_timestamp(&self) -> u64 {
         self.clock.values().copied().max().unwrap_or(0)
     }
 
+    /// Compares `self` to `other` under the causal partial order.
     pub fn partial_order(&self, other: &Self) -> ClockOrder {
         let self_dom = self.dominates(other);
         let other_dom = other.dominates(self);
@@ -43,7 +63,7 @@ impl VectorClock {
         }
     }
 
-    // self >= other component-wise
+    /// Returns `true` if `self` ≥ `other` component-wise.
     fn dominates(&self, other: &Self) -> bool {
         other.clock.iter().all(|(k, v)| self.get(k) >= *v)
     }
@@ -56,6 +76,7 @@ impl Crdt for VectorClock {
         self.clock.clone()
     }
 
+    /// Merge rule: element-wise maximum of each node's component.
     fn merge(&self, other: &Self) -> Self {
         let mut clock = self.clock.clone();
         for (k, v) in &other.clock {

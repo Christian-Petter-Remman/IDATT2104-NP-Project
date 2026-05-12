@@ -6,6 +6,15 @@ use crate::clocks::{ClockOrder, VectorClock};
 // LWWRegister
 // ---------------------------------------------------------------------------
 
+/// Last-writer-wins register.
+///
+/// Stores a single value together with the Lamport timestamp and node ID of
+/// the last writer. On merge the write with the higher timestamp wins;
+/// `node_id` breaks ties to guarantee a total order.
+///
+/// Callers derive the Lamport timestamp from their local [`VectorClock`]
+/// via [`VectorClock::lamport_timestamp`] before calling [`new`](LWWRegister::new)
+/// or [`set`](LWWRegister::set).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LWWRegister<T> {
     value: T,
@@ -14,11 +23,13 @@ pub struct LWWRegister<T> {
 }
 
 impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> LWWRegister<T> {
+    /// Creates a register with the given initial value, timestamp, and author.
     pub fn new(value: T, timestamp: u64, node_id: NodeId) -> Self {
         Self { value, timestamp, node_id }
     }
 
-    /// Replace the stored value if the new (timestamp, node_id) wins.
+    /// Conditionally updates the register. The new write wins only if its
+    /// `(timestamp, node_id)` pair is greater than the current one.
     pub fn set(&mut self, value: T, timestamp: u64, node_id: NodeId) {
         *self = self.clone().merge(&LWWRegister::new(value, timestamp, node_id));
     }
@@ -31,6 +42,10 @@ impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> Crdt for LWWR
         self.value.clone()
     }
 
+    /// Merge rule: higher timestamp wins; equal timestamp → higher `node_id` wins.
+    ///
+    /// Invariant: the same `(node_id, timestamp)` pair must always carry the
+    /// same value. Violating this produces a non-commutative merge.
     fn merge(&self, other: &Self) -> Self {
         if self.timestamp > other.timestamp {
             self.clone()
@@ -48,6 +63,15 @@ impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> Crdt for LWWR
 // MVRegister
 // ---------------------------------------------------------------------------
 
+/// Multi-value register.
+///
+/// Preserves all concurrently written values (values whose clocks are
+/// causally incomparable). Sequential writes (where one clock strictly
+/// dominates the previous) collapse to a single value. Callers read
+/// [`value`](Crdt::value) and apply application-level conflict resolution.
+///
+/// `PartialEq` is set-based: two registers are equal if they contain the
+/// same `(clock, value)` pairs regardless of internal ordering.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MVRegister<T> {
     entries: Vec<(VectorClock, T)>,
@@ -67,11 +91,13 @@ impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> Default for M
 }
 
 impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> MVRegister<T> {
+    /// Creates an empty register.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Record a write. Removes entries causally dominated by `clock`.
+    /// Records a local write. Entries whose clocks are strictly dominated by
+    /// `clock` are removed; concurrent entries are kept alongside the new one.
     pub fn write(&mut self, value: T, clock: VectorClock) {
         // Drop entries that the new clock strictly dominates
         self.entries
@@ -90,19 +116,21 @@ impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> MVRegister<T>
 impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> Crdt for MVRegister<T> {
     type Value = Vec<T>;
 
+    /// Returns all surviving (non-dominated) values. Multiple values indicate
+    /// concurrent writes that have not yet been resolved.
     fn value(&self) -> Vec<T> {
         self.entries.iter().map(|(_, v)| v.clone()).collect()
     }
 
+    /// Merge rule: union of both entry sets, retaining only entries not
+    /// strictly dominated by any other entry in the combined set.
     fn merge(&self, other: &Self) -> Self {
-        // Union of entries from both sides, deduplicated
         let mut all: Vec<(VectorClock, T)> = Vec::new();
         for e in self.entries.iter().chain(other.entries.iter()) {
             if !all.contains(e) {
                 all.push(e.clone());
             }
         }
-        // Keep only entries not strictly dominated by any other entry
         let entries = all
             .iter()
             .filter(|(vc, _)| {
