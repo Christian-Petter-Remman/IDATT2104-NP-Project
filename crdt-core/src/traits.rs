@@ -2,8 +2,8 @@ use uuid::Uuid;
 
 pub type NodeId = Uuid;
 
-pub trait Crdt: Clone {
+pub trait Crdt {
     type Value;
     fn value(&self) -> Self::Value;
-    fn merge(&self, other: &Self) -> Self;
+    fn merge(&mut self, other: Self);
 }

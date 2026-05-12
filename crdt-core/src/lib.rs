@@ -5,4 +5,4 @@ pub mod registers;
 pub mod sets;
 pub mod traits;
 
-pub use traits::{Crdt, NodeId, Rgba};
+pub use traits::{Crdt, NodeId};
