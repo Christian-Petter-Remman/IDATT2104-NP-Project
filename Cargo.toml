@@ -1,3 +1,2 @@
 [workspace]
-members = ["crates/crdt-lib", "crates/crdt-net", "crates/crdt-app"]
-resolver = "2"
+members = ["crdt-core", "crdt-net", "crdt-app"]

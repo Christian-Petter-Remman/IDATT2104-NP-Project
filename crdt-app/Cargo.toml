@@ -1,0 +1,8 @@
+[package]
+name = "crdt-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crdt-core = { version = "0.1.0", path = "../crdt-core" }
+crdt-net = { version = "0.1.0", path = "../crdt-net" }
