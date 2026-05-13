@@ -15,7 +15,7 @@ use crate::traits::Crdt;
 /// Peer B: {"milk", "eggs"}
 /// will give us
 /// Union:  {"milk", "bread", "eggs"}
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GSet<T>
 where
     T: Eq + Hash + Clone,
@@ -35,8 +35,8 @@ where
     }
 
     /// Adds an element to the set. Duplicate inserts are ignored.
-    pub fn insert(&mut self, element: T) {
-        self.elements.insert(element);
+    pub fn insert(&mut self, element: T) -> bool {
+        self.elements.insert(element)
     }
 
     /// Returns `true` if the set contains the element.
