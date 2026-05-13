@@ -8,20 +8,34 @@ use uuid::Uuid;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// A peer's identity and reachable address.
-///
-/// `node_id` is the stable identifier used for self-detection and peer-map
-/// keying. `addr` is the address other peers should connect to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PeerEntry {
     pub node_id: Uuid,
     pub addr: SocketAddr,
 }
 
+/// Wire-level gossip message.
+///
+/// `Sync` carries the sender's full CRDT state plus membership/tombstone
+/// hints. `Goodbye` is a state-free farewell that just propagates
+/// tombstones — it lets a peer leave the mesh cleanly without forcing
+/// callers to also serialize a final state snapshot.
+///
+/// The `T` parameter on `Goodbye` is phantom: the variant has no field
+/// that uses it, so a sender can construct
+/// `GossipMessage::<()>::Goodbye {...}` and any receiver will decode the
+/// same bytes regardless of which `T` they parameterize with.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GossipMessage<T> {
     Sync {
         from: PeerEntry,
         state: T,
+        known_peers: Vec<PeerEntry>,
+        departed: Vec<Uuid>,
+    },
+    Goodbye {
+        from: PeerEntry,
+        departed: Vec<Uuid>,
         known_peers: Vec<PeerEntry>,
     },
 }
