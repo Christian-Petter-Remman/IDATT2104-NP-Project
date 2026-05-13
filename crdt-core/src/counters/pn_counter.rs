@@ -6,6 +6,7 @@ use super::g_counter::GCounter;
 /// Two GCounters: one for increments, one for decrements.
 /// Value = increments.value() - decrements.value() (may be negative).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 pub struct PNCounter {
     increments: GCounter,
     decrements: GCounter,
