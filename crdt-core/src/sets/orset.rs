@@ -31,9 +31,23 @@ where
     /// Map of active tags keeping it alive
     entries: HashMap<T, HashSet<Tag>>,
     /// Tags that have been removed, the tombstones
+    /// Grows unbounded. ideally should use a GC strategy.
     removed_tags: HashSet<Tag>,
     /// Incremented on each insert to generate unique tags
     counter: u64,
+}
+
+impl<T> Default for ORSet<T>
+where
+    T: Eq + Hash + Clone,
+{
+    fn default() -> Self {
+        Self {
+             entries: HashMap::new(),
+            removed_tags: HashSet::new(),
+            counter: 0
+        }
+    }
 }
 
 /// Implementation with specific logic for re-adding items
@@ -51,11 +65,7 @@ where
     T: Eq + Hash + Clone,
 {
     pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            removed_tags: HashSet::new(),
-            counter: 0
-        }
+        Self::default()    
     }
 
     pub fn insert(&mut self, element: T, node_id: &NodeId) {
@@ -66,7 +76,7 @@ where
         };
         self.entries
             .entry(element)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(tag);
     }
 
@@ -75,7 +85,7 @@ where
             self.removed_tags.extend(tags);
             return true;
         }
-        return false;
+        false
     }
 
     pub fn contains(&self, element: &T) -> bool {
@@ -143,7 +153,7 @@ where
         for (element, other_tags) in other.entries {
             let local = self.entries
                 .entry(element)
-                .or_insert_with(HashSet::new);
+                .or_default();
             for tag in other_tags {
                 if !self.removed_tags.contains(&tag) {
                     local.insert(tag);

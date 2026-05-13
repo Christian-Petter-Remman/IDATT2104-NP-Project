@@ -23,16 +23,25 @@ where
     removed: GSet<T>,
 }
 
+impl<T> Default for TwoPSet<T>
+where
+    T: Eq + Hash + Clone,
+{
+    fn default() -> Self {
+        Self {
+            added: GSet::new(),
+            removed: GSet::new(),        
+        }
+    }
+}
+
 impl<T> TwoPSet<T>
 where  
     T: Eq + Hash + Clone,
 {
     /// Creates an empty TwoPSet.
     pub fn new() -> Self {
-        Self {
-            added: GSet::new(),
-            removed: GSet::new(),
-        }
+        Self::default()
     }
 
     /// Adds an element to the set.
@@ -55,7 +64,7 @@ where
             self.removed.insert(element);
             return true;
         } 
-        return false;
+        false
     }
 
     /// Returns `true` if the element is in the set. 

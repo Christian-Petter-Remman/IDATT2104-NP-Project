@@ -23,15 +23,24 @@ where
     elements: HashSet<T>,
 }
 
+impl<T> Default for GSet<T>
+where
+    T: Eq + Hash + Clone,
+{
+    fn default() -> Self {
+        Self {
+            elements: HashSet::new(),
+        }
+    }
+}
+
 impl<T> GSet<T>
 where
     T: Eq + Hash + Clone,
 {
     /// Creates an empty GSet.
     pub fn new() -> Self {
-        Self {
-            elements: HashSet::new(),
-        }
+        Self::default()
     }
 
     /// Adds an element to the set. Duplicate inserts are ignored.
