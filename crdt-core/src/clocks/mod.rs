@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use crate::traits::{Crdt, NodeId};
 
 /// Causality primitive used throughout the canvas CRDT.
@@ -9,7 +8,7 @@ use crate::traits::{Crdt, NodeId};
 ///
 /// Used directly by [`super::registers::MVRegister`] to detect concurrent
 /// writes, and as a Lamport timestamp source for [`super::registers::LWWRegister`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VectorClock {
     pub(crate) clock: HashMap<NodeId, u64>,
 }
@@ -77,13 +76,17 @@ impl Crdt for VectorClock {
     }
 
     /// Merge rule: element-wise maximum of each node's component.
-    fn merge(&self, other: &Self) -> Self {
-        let mut clock = self.clock.clone();
-        for (k, v) in &other.clock {
-            let e = clock.entry(*k).or_insert(0);
-            *e = (*e).max(*v);
+    fn merge(&mut self, other: Self) {
+        for (k, v) in other.clock {
+            let e = self.clock.entry(k).or_insert(0);
+            *e = (*e).max(v);
         }
-        VectorClock { clock }
+    }
+
+    /// Returns true if other dominates self component-wise,
+    /// i.e. merging other into self would produce other unchanged.
+    fn compare(&self, other: &Self) -> bool {
+        other.dominates(self)
     }
 }
 
@@ -129,9 +132,9 @@ mod tests {
         a.increment(n(1)); // n1=2
         b.increment(n(1)); // n1=1
         b.increment(n(2)); // n2=1
-        let m = a.merge(&b);
-        assert_eq!(m.get(&n(1)), 2);
-        assert_eq!(m.get(&n(2)), 1);
+        a.merge(b);
+        assert_eq!(a.get(&n(1)), 2);
+        assert_eq!(a.get(&n(2)), 1);
     }
 
     #[test]
@@ -181,20 +184,44 @@ mod tests {
         assert_eq!(vc.lamport_timestamp(), 2);
     }
 
+    #[test]
+    fn compare_true_when_other_dominates() {
+        let mut a = VectorClock::new();
+        let mut b = VectorClock::new();
+        a.increment(n(1));
+        b.increment(n(1));
+        b.increment(n(1));
+        assert!(a.compare(&b));
+        assert!(!b.compare(&a));
+    }
+
     proptest! {
         #[test]
         fn commutative(a in arb_clock(), b in arb_clock()) {
-            prop_assert_eq!(a.merge(&b), b.merge(&a));
+            let mut a1 = a.clone();
+            a1.merge(b.clone());
+            let mut b1 = b.clone();
+            b1.merge(a.clone());
+            prop_assert_eq!(a1, b1);
         }
 
         #[test]
         fn associative(a in arb_clock(), b in arb_clock(), c in arb_clock()) {
-            prop_assert_eq!(a.merge(&b).merge(&c), a.merge(&b.merge(&c)));
+            let mut ab = a.clone();
+            ab.merge(b.clone());
+            ab.merge(c.clone());
+            let mut bc = b.clone();
+            bc.merge(c.clone());
+            let mut a2 = a.clone();
+            a2.merge(bc);
+            prop_assert_eq!(ab, a2);
         }
 
         #[test]
         fn idempotent(a in arb_clock()) {
-            prop_assert_eq!(a.merge(&a.clone()), a);
+            let mut a1 = a.clone();
+            a1.merge(a.clone());
+            prop_assert_eq!(a1, a);
         }
     }
 }

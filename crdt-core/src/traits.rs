@@ -3,26 +3,31 @@ use uuid::Uuid;
 /// Unique identifier for a node in the P2P network.
 pub type NodeId = Uuid;
 
-/// RGBA color as four bytes: (red, green, blue, alpha).
-pub type Rgba = (u8, u8, u8, u8);
-
-/// Core trait for all CRDT types.
+/// Trait for state-based Conflict-free Replicated Data Types
 ///
-/// Every implementation must satisfy three mathematical laws:
-/// - **Commutativity**: `a.merge(&b) == b.merge(&a)`
-/// - **Associativity**: `a.merge(&b).merge(&c) == a.merge(&b.merge(&c))`
-/// - **Idempotency**: `a.merge(&a) == a`
-///
-/// These laws guarantee that nodes converge to the same state regardless of
-/// the order or number of times gossip messages are received.
-pub trait Crdt: Clone {
-    /// The read-only view of this CRDT's current state.
+/// All CRDTs should have four operations, where three of them is
+/// implemented the same way for all (part of this trait).
+/// - value: reads the current state.
+/// - compare: check if self is a part of other replica.
+/// - merge: merge another replica to self.
+/// - update: type specific, and not part of this trait.
+pub trait Crdt {
     type Value;
 
-    /// Returns the current logical value of this CRDT.
+    /// Query the current value of this CRDT.
+    ///
+    /// Clones internal state so the caller gets an independent copy.
     fn value(&self) -> Self::Value;
 
-    /// Merges `other` into `self`, returning the least upper bound of both
-    /// states. Must not mutate either operand.
-    fn merge(&self, other: &Self) -> Self;
+    /// Merge another replica into this one.
+    ///
+    /// Guarantees convergence — result is the same regardless of
+    /// merge order, grouping, or repetition.
+    fn merge(&mut self, other: Self);
+
+    /// Returns true if self is a subset of other.
+    ///
+    /// If `self.compare(other)` is true, then `self.merge(other)`
+    /// would result in other (merging is not required for the other side).
+    fn compare(&self, other: &Self) -> bool;
 }
