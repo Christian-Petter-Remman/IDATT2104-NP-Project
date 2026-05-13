@@ -49,10 +49,6 @@ where
 /// is responsible for generating timestamps (can be done with [`VectorClock`])
 ///
 /// Keys are created on first write and never removed.
-/// Removal would require tombstones or ORSet-style key
-/// management (see OR-Map), which is out of scope for LWW
-/// semantics. For the canvas use case this is fine — a pixel
-/// that has been painted once stays in the map forever.
 impl<K, V> LWWMap<K, V>
 where
     K: Eq + Hash + Clone,
@@ -62,13 +58,21 @@ where
         Self::default()
     }
 
-    /// Sets a key to a value. If the key already exists,
-    /// the write only takes effect if the timestamp is higher.
-    pub fn set(&mut self, key: K, value: V, timestamp: u64, node_id: NodeId) {
+
+    /// Sets a key to a value at the given timestamp.
+    ///
+    /// If the key already exists, the write is forwarded to its
+    /// LWWRegister, which only accepts it if the timestamp is
+    /// higher (or equal with a higher node_id). Stale writes
+    /// are silently ignored.
+    ///
+    /// If the key is new, a fresh LWWRegister is created.
+    pub fn set(&mut self, key: K, value: V, timestamp: u64, node_id: NodeId) -> bool {
         match self.entries.get_mut(&key) {
             Some(register) => register.set(value, timestamp, node_id),
             None => {
                 self.entries.insert(key, LWWRegister::new(value, timestamp, node_id));
+                true
             }
         }
     }

@@ -40,11 +40,9 @@ impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {
         self.value.clone()
     }
 
-    /// Higher timestamp wins; equal timestamp → higher `node_id` wins.
+    /// Higher timestamp wins; equal timestamp -> higher `node_id` wins.
     fn merge(&mut self, other: Self) {
-        if other.timestamp > self.timestamp
-            || (other.timestamp == self.timestamp && other.node_id > self.node_id)
-        {
+        if self.is_superseded_by(&other) {
             *self = other;
         }
     }
@@ -55,8 +53,7 @@ impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {
     /// For LWWRegister this means `other` has a higher timestamp,
     /// or equal timestamp with a higher or equal node_id.
     fn compare(&self, other: &Self) -> bool {
-        other.timestamp > self.timestamp
-            || (other.timestamp == self.timestamp && other.node_id >= self.node_id)
+        !other.is_superseded_by(self)
     }
 }
 
