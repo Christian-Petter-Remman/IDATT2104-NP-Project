@@ -4,6 +4,7 @@ mod state;
 mod api;
 
 use std::sync::Arc;
+use gossip::{NoopGossip, GossipBackend};
 use state::AppState;
 use uuid::Uuid;
 
