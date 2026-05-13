@@ -75,11 +75,7 @@ pub(crate) fn spawn_mdns(
     Ok(())
 }
 
-fn handle_event(
-    self_id: Uuid,
-    registry: &PeerRegistry,
-    event: ServiceEvent,
-) -> Result<(), String> {
+fn handle_event(self_id: Uuid, registry: &PeerRegistry, event: ServiceEvent) -> Result<(), String> {
     match event {
         ServiceEvent::ServiceResolved(info) => {
             if let Some((id, addr)) = parse_peer(self_id, &info) {
@@ -89,13 +85,12 @@ fn handle_event(
         }
         ServiceEvent::ServiceRemoved(_ty, fullname) => {
             // Fullname is e.g. "<uuid>._crdt-net._tcp.local."
-            if let Some(uuid_str) = fullname.split('.').next() {
-                if let Ok(id) = Uuid::parse_str(uuid_str) {
-                    if id != self_id {
-                        debug!(%id, "mdns removed peer");
-                        registry.remove(id);
-                    }
-                }
+            if let Some(uuid_str) = fullname.split('.').next()
+                && let Ok(id) = Uuid::parse_str(uuid_str)
+                && id != self_id
+            {
+                debug!(%id, "mdns removed peer");
+                registry.remove(id);
             }
         }
         _ => {}

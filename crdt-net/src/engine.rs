@@ -59,13 +59,7 @@ impl PeerRegistry {
             return;
         }
         // If we already have a resolved entry at this address, no point adding.
-        if self
-            .resolved
-            .lock()
-            .unwrap()
-            .values()
-            .any(|a| *a == addr)
-        {
+        if self.resolved.lock().unwrap().values().any(|a| *a == addr) {
             return;
         }
         self.bootstraps.lock().unwrap().insert(addr);
@@ -110,9 +104,9 @@ impl PeerRegistry {
 
 /// Handle to a running gossip engine.
 ///
-/// The engine spawns its listener, tick loop, and (optionally) mDNS announce
-/// + browse tasks on construction. The handle is used to mutate the peer
-/// registry at runtime and to request shutdown.
+/// The engine spawns its listener, tick loop, and (optionally) mDNS
+/// announce and browse tasks on construction. The handle is used to mutate
+/// the peer registry at runtime and to request shutdown.
 ///
 /// # State contract
 ///
@@ -170,15 +164,11 @@ impl GossipEngine {
             shutdown.clone(),
         );
 
-        if config.enable_mdns {
-            if let Err(e) = discovery::spawn_mdns(
-                self_id,
-                advertise_addr,
-                registry.clone(),
-                shutdown.clone(),
-            ) {
-                warn!(error = %e, "mDNS init failed; continuing without auto-discovery");
-            }
+        if config.enable_mdns
+            && let Err(e) =
+                discovery::spawn_mdns(self_id, advertise_addr, registry.clone(), shutdown.clone())
+        {
+            warn!(error = %e, "mDNS init failed; continuing without auto-discovery");
         }
 
         Ok(Self {
