@@ -1,5 +1,6 @@
 use crate::traits::{Crdt, NodeId};
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct LWWRegister<T> {
     value: T,

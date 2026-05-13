@@ -6,6 +6,7 @@ use super::g_set::GSet;
 /// Internally: `added: GSet<T>` + `tombstoned: GSet<T>`.
 /// `contains` = in added AND NOT in tombstoned.
 /// Once tombstoned, an item cannot be re-added.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TwoPSet<T: Clone + Eq + std::hash::Hash> {
     added: GSet<T>,
     tombstoned: GSet<T>,

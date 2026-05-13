@@ -5,6 +5,7 @@ use crate::traits::{Crdt, NodeId};
 ///
 /// Each node tracks its own increment count. Value = sum of all nodes.
 /// Merge = element-wise max. Never decreases.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GCounter {
     counts: HashMap<NodeId, u64>,
 }

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use crate::traits::Crdt;
 
 /// Grow-only set. Items can only be added, never removed.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GSet<T: Clone + Eq + std::hash::Hash> {
     items: HashSet<T>,
 }

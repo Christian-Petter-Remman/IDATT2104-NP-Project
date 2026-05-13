@@ -13,6 +13,8 @@ use crate::traits::Crdt;
 /// - `tombstones: HashSet<Uuid>`       — removed tags
 ///
 /// `contains(item)` = item has at least one tag NOT in tombstones.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 pub struct ORSet<T: Clone + Eq + std::hash::Hash> {
     tags: HashMap<T, HashSet<Uuid>>,
     tombstones: HashSet<Uuid>,
