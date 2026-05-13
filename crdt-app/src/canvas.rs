@@ -45,20 +45,9 @@ impl CanvasDocument {
             .set(color, timestamp, node_id);
     }
 
-    pub fn get_pixel(&self, x: u8, y: u8) -> Rgba {
-        self.pixels.get(&(x, y)).map(|r| r.value()).unwrap_or(DEFAULT_PIXEL)
-    }
+    // TODO: wire cursor updates via API once crdt-net gossip is integrated
 
-    pub fn update_cursor(&mut self, user_id: Uuid, pos: (u8, u8), timestamp: u64) {
-        self.cursors
-            .entry(user_id)
-            .or_insert_with(|| LWWRegister::new((0, 0), 0, user_id))
-            .set(pos, timestamp, user_id);
-    }
-
-    pub fn add_user(&mut self, user_id: Uuid) { self.users.insert(user_id); }
-    pub fn remove_user(&mut self, user_id: &Uuid) { self.users.remove(user_id); }
-    pub fn active_users(&self) -> Vec<Uuid> { self.users.iter().copied().collect() }
+    // TODO: replace UserSet with ORSet<Uuid> and expose add/remove/active_users via API
 }
 
 impl Crdt for CanvasDocument {
@@ -99,16 +88,20 @@ mod tests {
 
     fn node(id: u128) -> NodeId { Uuid::from_u128(id) }
 
+    fn get_pixel(doc: &CanvasDocument, x: u8, y: u8) -> Rgba {
+        doc.pixels.get(&(x, y)).map(|r| r.value()).unwrap_or(DEFAULT_PIXEL)
+    }
+
     #[test]
     fn paint_and_get() {
         let mut d = CanvasDocument::new();
         d.paint(1, 2, (255, 0, 0, 255), node(1), 1);
-        assert_eq!(d.get_pixel(1, 2), (255, 0, 0, 255));
+        assert_eq!(get_pixel(&d, 1, 2), (255, 0, 0, 255));
     }
 
     #[test]
     fn default_pixel_white() {
-        assert_eq!(CanvasDocument::new().get_pixel(0, 0), DEFAULT_PIXEL);
+        assert_eq!(get_pixel(&CanvasDocument::new(), 0, 0), DEFAULT_PIXEL);
     }
 
     #[test]
@@ -118,7 +111,7 @@ mod tests {
         a.paint(0, 0, (255, 0, 0, 255), node(1), 10);
         b.paint(0, 0, (0, 0, 255, 255), node(2), 5);
         a.merge(b);
-        assert_eq!(a.get_pixel(0, 0), (255, 0, 0, 255));
+        assert_eq!(get_pixel(&a, 0, 0), (255, 0, 0, 255));
     }
 
     #[test]
@@ -129,16 +122,8 @@ mod tests {
         b.paint(0, 0, (0, 0, 255, 255), node(2), 5);
         let mut a1 = a.clone(); a1.merge(b.clone());
         let mut b1 = b.clone(); b1.merge(a.clone());
-        assert_eq!(a1.get_pixel(0, 0), b1.get_pixel(0, 0));
+        assert_eq!(get_pixel(&a1, 0, 0), get_pixel(&b1, 0, 0));
     }
 
-    #[test]
-    fn add_remove_user() {
-        let mut doc = CanvasDocument::new();
-        doc.add_user(node(1));
-        assert!(doc.active_users().contains(&node(1)));
-        doc.remove_user(&node(1));
-        assert!(!doc.active_users().contains(&node(1)));
-    }
     // TODO: add concurrent-add-wins test once ORSet is merged in
 }

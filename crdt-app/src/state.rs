@@ -12,9 +12,11 @@ pub struct AppState<G: GossipBackend> {
     pub ws_tx: broadcast::Sender<CanvasDocument>,
 }
 
+const WS_BROADCAST_CAPACITY: usize = 64;
+
 impl<G: GossipBackend> AppState<G> {
     pub fn new(node_id: Uuid, gossip: G) -> Arc<Self> {
-        let (ws_tx, _) = broadcast::channel(64);
+        let (ws_tx, _) = broadcast::channel(WS_BROADCAST_CAPACITY);
         Arc::new(Self {
             node_id,
             canvas: RwLock::new(CanvasDocument::new()),

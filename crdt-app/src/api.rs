@@ -44,9 +44,9 @@ async fn paint<G: GossipBackend + Clone>(
     Json(req): Json<PaintRequest>,
 ) -> impl IntoResponse {
     let color: Rgba = (req.color[0], req.color[1], req.color[2], req.color[3]);
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+    let ts = std::time::SystemTime::UNIX_EPOCH
+        .elapsed()
+        .unwrap_or_default()
         .as_millis() as u64;
     s.paint(req.x, req.y, color, ts).await;
     Json(serde_json::json!({ "ok": true }))
@@ -71,7 +71,10 @@ async fn handle_ws<G: GossipBackend + Clone>(
 ) {
     {
         let canvas = state.canvas.read().await;
-        let Ok(msg) = serde_json::to_string(&*canvas) else { return };
+        let Ok(msg) = serde_json::to_string(&*canvas) else {
+            tracing::error!("failed to serialize canvas state");
+            return;
+        };
         if socket.send(axum::extract::ws::Message::Text(msg.into())).await.is_err() {
             return;
         }
@@ -80,7 +83,10 @@ async fn handle_ws<G: GossipBackend + Clone>(
     loop {
         match rx.recv().await {
             Ok(canvas) => {
-                let Ok(msg) = serde_json::to_string(&canvas) else { break };
+                let Ok(msg) = serde_json::to_string(&canvas) else {
+                    tracing::error!("failed to serialize canvas state");
+                    break;
+                };
                 if socket.send(axum::extract::ws::Message::Text(msg.into())).await.is_err() {
                     break;
                 }
