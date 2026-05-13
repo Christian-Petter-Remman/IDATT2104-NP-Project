@@ -13,7 +13,7 @@ use crate::traits::{Crdt, NodeId};
 /// The (node_id, seq) pair is guaranteed unique across all peers.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Tag {
+pub(crate) struct Tag {
     node_id: NodeId,
     seq: u64,
 }
@@ -60,6 +60,7 @@ where
     }
 
     pub fn insert(&mut self, element: T, node_id: &NodeId) {
+        // u64 wraps after ~1.8×10¹⁹ inserts per node; (node_id, seq) collision would silently break add-wins.
         self.counter += 1;
         let tag = Tag {
             node_id: *node_id,
@@ -67,7 +68,7 @@ where
         };
         self.entries
             .entry(element)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(tag);
     }
 

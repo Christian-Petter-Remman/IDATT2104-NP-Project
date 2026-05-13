@@ -6,7 +6,7 @@ use crate::traits::{Crdt, NodeId};
 /// Each node tracks its own increment count. Value = sum of all nodes.
 /// Merge = element-wise max. Never decreases.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GCounter {
     counts: HashMap<NodeId, u64>,
 }
@@ -49,5 +49,85 @@ impl Crdt for GCounter {
     /// True if every component of self ≤ other.
     fn compare(&self, other: &Self) -> bool {
         self.counts.iter().all(|(k, v)| *v <= other.get(k))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn n(id: u128) -> NodeId { Uuid::from_u128(id) }
+
+    #[test]
+    fn new_starts_at_zero() {
+        assert_eq!(GCounter::new().value(), 0);
+    }
+
+    #[test]
+    fn get_unknown_node_returns_zero() {
+        assert_eq!(GCounter::new().get(&n(1)), 0);
+    }
+
+    #[test]
+    fn increment_increases_count() {
+        let mut c = GCounter::new();
+        c.increment(n(1));
+        c.increment(n(1));
+        assert_eq!(c.get(&n(1)), 2);
+    }
+
+    #[test]
+    fn value_sums_all_nodes() {
+        let mut c = GCounter::new();
+        c.increment(n(1));
+        c.increment(n(1));
+        c.increment(n(2));
+        assert_eq!(c.value(), 3);
+    }
+
+    #[test]
+    fn merge_takes_element_wise_max() {
+        let mut a = GCounter::new();
+        a.increment(n(1));
+        a.increment(n(1)); // n1=2
+        let mut b = GCounter::new();
+        b.increment(n(1)); // n1=1
+        b.increment(n(2)); // n2=1
+        a.merge(b);
+        assert_eq!(a.get(&n(1)), 2);
+        assert_eq!(a.get(&n(2)), 1);
+        assert_eq!(a.value(), 3);
+    }
+
+    #[test]
+    fn merge_commutativity() {
+        let mut a = GCounter::new();
+        a.increment(n(1));
+        let mut b = GCounter::new();
+        b.increment(n(2));
+        let mut ab = a.clone(); ab.merge(b.clone());
+        let mut ba = b.clone(); ba.merge(a.clone());
+        assert_eq!(ab.value(), ba.value());
+    }
+
+    #[test]
+    fn merge_idempotency() {
+        let mut a = GCounter::new();
+        a.increment(n(1));
+        let before = a.value();
+        a.merge(a.clone());
+        assert_eq!(a.value(), before);
+    }
+
+    #[test]
+    fn compare_subset() {
+        let mut a = GCounter::new();
+        a.increment(n(1));
+        let mut b = GCounter::new();
+        b.increment(n(1));
+        b.increment(n(1));
+        assert!(a.compare(&b));
+        assert!(!b.compare(&a));
     }
 }
