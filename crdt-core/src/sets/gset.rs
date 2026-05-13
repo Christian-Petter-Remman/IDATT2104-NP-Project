@@ -68,3 +68,81 @@ where
         self.elements.is_subset(&other.elements)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::Crdt;
+
+    #[test]
+    fn insert_and_contains() {
+        let mut set = GSet::new();
+        assert!(!set.contains(&"milk"));
+        set.insert("milk");
+        assert!(set.contains(&"milk"));
+    }
+
+    #[test]
+    fn duplicate_insert_ignored() {
+        let mut set = GSet::new();
+        assert!(set.insert("milk"));   // first add will be true
+        assert!(!set.insert("milk"));  // duplicate will be ignored aka. return false
+    }
+
+    #[test]
+    fn value_returns_all_elements() {
+        let mut set = GSet::new();
+        set.insert("milk");
+        set.insert("eggs");
+        let val = set.value();
+        assert_eq!(val, HashSet::from(["milk", "eggs"]));
+    }
+
+    #[test]
+    fn merge_is_union() {
+        let mut a = GSet::new();
+        a.insert("milk");
+        let mut b = GSet::new();
+        b.insert("eggs");
+
+        a.merge(b);
+        assert!(a.contains(&"milk"));
+        assert!(a.contains(&"eggs"));
+    }
+
+    #[test]
+    fn merge_commutativity() {
+        let mut a = GSet::new();
+        a.insert("milk");
+        let mut b = GSet::new();
+        b.insert("eggs");
+
+        let mut ab = a.clone();
+        ab.merge(b.clone());
+        let mut ba = b.clone();
+        ba.merge(a.clone());
+
+        assert_eq!(ab.value(), ba.value());
+    }
+
+    #[test]
+    fn merge_idempotency() {
+        let mut a = GSet::new();
+        a.insert("milk");
+        let before = a.value();
+        a.merge(a.clone());
+        assert_eq!(a.value(), before);
+    }
+
+    #[test]
+    fn compare_subset() {
+        let mut a = GSet::new();
+        a.insert("milk");
+        let mut b = GSet::new();
+        b.insert("milk");
+        b.insert("eggs");
+
+        assert!(a.compare(&b));   // a in b
+        assert!(!b.compare(&a));  // b not in a
+    }
+}
