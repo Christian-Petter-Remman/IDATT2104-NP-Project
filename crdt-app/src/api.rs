@@ -71,7 +71,7 @@ async fn handle_ws<G: GossipBackend + Clone>(
 ) {
     {
         let canvas = state.canvas.read().await;
-        let msg = serde_json::to_string(&*canvas).unwrap();
+        let Ok(msg) = serde_json::to_string(&*canvas) else { return };
         if socket.send(axum::extract::ws::Message::Text(msg.into())).await.is_err() {
             return;
         }
@@ -80,12 +80,15 @@ async fn handle_ws<G: GossipBackend + Clone>(
     loop {
         match rx.recv().await {
             Ok(canvas) => {
-                let msg = serde_json::to_string(&canvas).unwrap();
+                let Ok(msg) = serde_json::to_string(&canvas) else { break };
                 if socket.send(axum::extract::ws::Message::Text(msg.into())).await.is_err() {
                     break;
                 }
             }
-            Err(_) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!("ws client lagged, dropped {} messages", n);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
 }
