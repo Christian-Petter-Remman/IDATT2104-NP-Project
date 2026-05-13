@@ -4,9 +4,8 @@
 //! Merge is set union. Serves as a building block for [`TwoPSet`].
 use std::collections::HashSet;
 use std::hash::Hash;
-use serde::{Serialize, Deserialize};
 
-use crate::traits::Crdt; 
+use crate::traits::Crdt;
 
 /// A grow-only set where elements can be added but never removed.
 /// Is a set union, guaranteeing convergence across peers
@@ -15,7 +14,8 @@ use crate::traits::Crdt;
 /// Peer B: {"milk", "eggs"}
 /// will give us
 /// Union:  {"milk", "bread", "eggs"}
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GSet<T>
 where
     T: Eq + Hash + Clone,

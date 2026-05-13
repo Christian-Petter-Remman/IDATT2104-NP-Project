@@ -4,7 +4,6 @@
 //! can never be re-added. This limitation is solved by [`ORSet`].
 use std::collections::HashSet;
 use std::hash::Hash;
-use serde::{Deserialize, Serialize};
 
 use crate::traits::Crdt;
 use super::gset::GSet;
@@ -14,7 +13,8 @@ use super::gset::GSet;
 /// Internally composed of two [`GSet`]s: one tracking additions,
 /// one tracking removals. An element is in the set
 /// if it has been added and not removed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TwoPSet<T> 
 where 
     T: Eq + Hash + Clone,

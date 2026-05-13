@@ -34,10 +34,14 @@ impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {
         }
     }
 
-    /// Returns true if other would win a merge against self.
+    /// Returns `true` if `self` is dominated by or equal to `other`.
+    ///
+    /// When `true`, merging `self` into `other` would not change `other`.
+    /// For LWWRegister this means `other` has a higher timestamp,
+    /// or equal timestamp with a higher or equal node_id.
     fn compare(&self, other: &Self) -> bool {
         other.timestamp > self.timestamp
-            || (other.timestamp == self.timestamp && other.node_id > self.node_id)
+            || (other.timestamp == self.timestamp && other.node_id >= self.node_id)
     }
 }
 

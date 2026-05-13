@@ -6,13 +6,13 @@
 //! the element being present.
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use serde::{Serialize, Deserialize};
 use crate::traits::{Crdt, NodeId};
 
 /// Unique identifier for a single add operation.
 /// 
 /// The (node_id, seq) pair is guaranteed unique across all peers.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tag {
     node_id: NodeId,
     seq: u64,
@@ -23,7 +23,8 @@ pub struct Tag {
 /// Each add creates a unique [`Tag`]. Remove only tombstones tags
 /// that are currently visible. A concurrent add (with an unseen tag)
 /// survives a concurrent remove.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ORSet<T>
 where
     T: Eq + Hash + Clone,

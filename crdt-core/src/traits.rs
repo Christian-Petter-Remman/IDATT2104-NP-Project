@@ -11,7 +11,10 @@ pub type NodeId = Uuid;
 /// - `compare`: check if self is a part of other replica.
 /// - `merge`: merge another replica to self.
 /// - `update`: type specific, and not part of this trait.
-pub trait Crdt {
+///
+/// Requires `Clone` because `merge` consumes `other`, so callers
+/// must be able to clone replicas to merge while keeping a copy.
+pub trait Crdt: Clone {
     type Value;
 
     /// Query the current value of this CRDT
