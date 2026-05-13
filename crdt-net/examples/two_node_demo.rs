@@ -169,7 +169,9 @@ async fn main() -> std::io::Result<()> {
         args.bootstraps,
         if args.mdns { "on" } else { "off" }
     );
-    println!("commands: bump | peers | add IP:PORT | rm UUID | quit");
+    println!(
+        "commands: bump | peers | tombstones | add IP:PORT | rm UUID | quit  (Ctrl-C also exits cleanly)"
+    );
 
     // Self-peer guard: if a bootstrap matches our advertise addr, warn loudly.
     let advertise = engine.advertise_addr();
@@ -212,44 +214,69 @@ async fn main() -> std::io::Result<()> {
         });
     }
 
-    // stdin loop.
+    // stdin loop, racing against Ctrl-C so we can shut down gracefully.
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
-    while let Some(line) = lines.next_line().await? {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
-        match cmd {
-            "bump" => state_tx.send_modify(|s| s.bump(node_id)),
-            "peers" => {
-                let peers = engine.known_peers();
-                if peers.is_empty() {
-                    println!("(no known peers yet)");
-                } else {
-                    for p in peers {
-                        println!("  {}  {}", p.node_id, p.addr);
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                let line = match line? {
+                    Some(l) => l,
+                    None => break, // stdin closed
+                };
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
+                match cmd {
+                    "bump" => state_tx.send_modify(|s| s.bump(node_id)),
+                    "peers" => {
+                        let peers = engine.known_peers();
+                        if peers.is_empty() {
+                            println!("(no known peers yet)");
+                        } else {
+                            for p in peers {
+                                println!("  {}  {}", p.node_id, p.addr);
+                            }
+                        }
                     }
+                    "tombstones" => {
+                        let tombs = engine.known_tombstones();
+                        if tombs.is_empty() {
+                            println!("(no tombstones)");
+                        } else {
+                            for id in tombs {
+                                println!("  {id}");
+                            }
+                        }
+                    }
+                    "add" => match rest.parse::<SocketAddr>() {
+                        Ok(addr) => {
+                            engine.add_bootstrap(addr);
+                            println!("added bootstrap {addr}");
+                        }
+                        Err(e) => println!("bad addr: {e}"),
+                    },
+                    "rm" => match Uuid::parse_str(rest) {
+                        Ok(id) => {
+                            engine.remove_peer(id);
+                            println!("removed {id}");
+                        }
+                        Err(e) => println!("bad UUID: {e}"),
+                    },
+                    "quit" | "exit" => break,
+                    _ => println!("unknown command: {cmd}"),
                 }
             }
-            "add" => match rest.parse::<SocketAddr>() {
-                Ok(addr) => {
-                    engine.add_bootstrap(addr);
-                    println!("added bootstrap {addr}");
-                }
-                Err(e) => println!("bad addr: {e}"),
-            },
-            "rm" => match Uuid::parse_str(rest) {
-                Ok(id) => {
-                    engine.remove_peer(id);
-                    println!("removed {id}");
-                }
-                Err(e) => println!("bad UUID: {e}"),
-            },
-            "quit" | "exit" => break,
-            _ => println!("unknown command: {cmd}"),
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nCtrl-C received — sending Goodbye to peers...");
+                break;
+            }
         }
     }
+
+    eprintln!("graceful shutdown...");
+    engine.graceful_shutdown().await;
     Ok(())
 }
