@@ -145,7 +145,7 @@ where
         for (element, other_tags) in other.entries {
             let local = self.entries
                 .entry(element)
-                .or_insert_with(HashSet::new);
+                .or_default();
             for tag in other_tags {
                 if !self.removed_tags.contains(&tag) {
                     local.insert(tag);
