@@ -19,11 +19,12 @@ async fn main() {
     // GossipEngine must implement GossipBackend (see gossip.rs).
 
     let state_clone = Arc::clone(&state);
-    tokio::spawn(async move {
+    let _gossip_handle = tokio::spawn(async move {
         let mut rx = state_clone.gossip.subscribe();
         while let Ok(incoming) = rx.recv().await {
             state_clone.apply_gossip(incoming).await;
         }
+        tracing::warn!("gossip listener exited");
     });
 
     let port: u16 = std::env::args()
