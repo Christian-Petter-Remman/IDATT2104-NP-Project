@@ -37,7 +37,6 @@ impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {
     fn compare(&self, other: &Self) -> bool {
         other.timestamp > self.timestamp
             || (other.timestamp == self.timestamp && other.node_id > self.node_id)
-            || (other.timestamp == self.timestamp && other.node_id == self.node_id)
     }
 }
 
