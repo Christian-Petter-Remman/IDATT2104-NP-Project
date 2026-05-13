@@ -1,40 +1,43 @@
-use serde::{Deserialize, Serialize};
 use crate::traits::{Crdt, NodeId};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LWWRegister<T> {
     value: T,
     timestamp: u64,
     node_id: NodeId,
 }
 
-impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> LWWRegister<T> {
+impl<T: Clone + PartialEq> LWWRegister<T> {
     pub fn new(value: T, timestamp: u64, node_id: NodeId) -> Self {
         Self { value, timestamp, node_id }
     }
 
     pub fn set(&mut self, value: T, timestamp: u64, node_id: NodeId) {
-        *self = self.clone().merge(&LWWRegister::new(value, timestamp, node_id));
+        self.merge(LWWRegister::new(value, timestamp, node_id));
     }
 }
 
-impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> Crdt for LWWRegister<T> {
+impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {
     type Value = T;
 
     fn value(&self) -> T {
         self.value.clone()
     }
 
-    fn merge(&self, other: &Self) -> Self {
-        if self.timestamp > other.timestamp {
-            self.clone()
-        } else if other.timestamp > self.timestamp {
-            other.clone()
-        } else if self.node_id >= other.node_id {
-            self.clone()
-        } else {
-            other.clone()
+    /// Higher timestamp wins; equal timestamp → higher `node_id` wins.
+    fn merge(&mut self, other: Self) {
+        if other.timestamp > self.timestamp
+            || (other.timestamp == self.timestamp && other.node_id > self.node_id)
+        {
+            *self = other;
         }
+    }
+
+    /// Returns true if other would win a merge against self.
+    fn compare(&self, other: &Self) -> bool {
+        other.timestamp > self.timestamp
+            || (other.timestamp == self.timestamp && other.node_id > self.node_id)
+            || (other.timestamp == self.timestamp && other.node_id == self.node_id)
     }
 }
 
@@ -45,10 +48,6 @@ mod tests {
     use uuid::Uuid;
 
     fn n(id: u128) -> NodeId { Uuid::from_u128(id) }
-
-    fn arb_node() -> impl Strategy<Value = NodeId> {
-        prop::sample::select(vec![n(1), n(2), n(3)])
-    }
 
     fn arb_lww() -> impl Strategy<Value = LWWRegister<u32>> {
         (0u32..=100u32, 0u64..=10u64, 0usize..3).prop_map(|(value, timestamp, idx)| {
@@ -66,15 +65,23 @@ mod tests {
     fn lww_merge_higher_timestamp_wins() {
         let a = LWWRegister::new(1u32, 10, n(1));
         let b = LWWRegister::new(2u32, 5, n(2));
-        assert_eq!(a.merge(&b).value(), 1);
-        assert_eq!(b.merge(&a).value(), 1);
+        let mut r1 = a.clone();
+        r1.merge(b.clone());
+        assert_eq!(r1.value(), 1);
+        let mut r2 = b.clone();
+        r2.merge(a.clone());
+        assert_eq!(r2.value(), 1);
     }
 
     #[test]
     fn lww_merge_equal_timestamp_higher_node_wins() {
         let a = LWWRegister::new(1u32, 5, n(2));
         let b = LWWRegister::new(2u32, 5, n(1));
-        assert_eq!(a.merge(&b), b.merge(&a));
+        let mut a1 = a.clone();
+        a1.merge(b.clone());
+        let mut b1 = b.clone();
+        b1.merge(a.clone());
+        assert_eq!(a1, b1);
     }
 
     #[test]
@@ -91,23 +98,44 @@ mod tests {
         assert_eq!(r.value(), 1);
     }
 
+    #[test]
+    fn lww_compare_other_dominates() {
+        let a = LWWRegister::new(1u32, 5, n(1));
+        let b = LWWRegister::new(2u32, 10, n(1));
+        assert!(a.compare(&b));
+        assert!(!b.compare(&a));
+    }
+
     proptest! {
         #[test]
         fn lww_commutative(a in arb_lww(), b in arb_lww()) {
             prop_assume!(
                 a.node_id != b.node_id || a.timestamp != b.timestamp || a.value == b.value
             );
-            prop_assert_eq!(a.merge(&b), b.merge(&a));
+            let mut a1 = a.clone();
+            a1.merge(b.clone());
+            let mut b1 = b.clone();
+            b1.merge(a.clone());
+            prop_assert_eq!(a1, b1);
         }
 
         #[test]
         fn lww_associative(a in arb_lww(), b in arb_lww(), c in arb_lww()) {
-            prop_assert_eq!(a.merge(&b).merge(&c), a.merge(&b.merge(&c)));
+            let mut ab = a.clone();
+            ab.merge(b.clone());
+            ab.merge(c.clone());
+            let mut bc = b.clone();
+            bc.merge(c.clone());
+            let mut a2 = a.clone();
+            a2.merge(bc);
+            prop_assert_eq!(ab, a2);
         }
 
         #[test]
         fn lww_idempotent(a in arb_lww()) {
-            prop_assert_eq!(a.merge(&a.clone()), a);
+            let mut a1 = a.clone();
+            a1.merge(a.clone());
+            prop_assert_eq!(a1, a);
         }
     }
 }

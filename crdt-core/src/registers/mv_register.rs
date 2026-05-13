@@ -1,33 +1,34 @@
-use serde::{Deserialize, Serialize};
 use crate::traits::Crdt;
 use crate::clocks::{ClockOrder, VectorClock};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct MVRegister<T> {
     entries: Vec<(VectorClock, T)>,
 }
 
-impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> PartialEq for MVRegister<T> {
+impl<T: Clone + PartialEq> PartialEq for MVRegister<T> {
     fn eq(&self, other: &Self) -> bool {
         self.entries.len() == other.entries.len()
             && self.entries.iter().all(|e| other.entries.contains(e))
     }
 }
 
-impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> Default for MVRegister<T> {
+impl<T: Clone + PartialEq> Default for MVRegister<T> {
     fn default() -> Self {
         Self { entries: Vec::new() }
     }
 }
 
-impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> MVRegister<T> {
+impl<T: Clone + PartialEq> MVRegister<T> {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn write(&mut self, value: T, clock: VectorClock) {
-        self.entries
-            .retain(|(vc, _)| clock.partial_order(vc) != ClockOrder::After);
+        // Remove entries dominated by or equal to the new clock (same logical time = replace).
+        self.entries.retain(|(vc, _)| {
+            !matches!(clock.partial_order(vc), ClockOrder::After | ClockOrder::Equal)
+        });
         let dominated = self
             .entries
             .iter()
@@ -38,21 +39,22 @@ impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> MVRegister<T>
     }
 }
 
-impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> Crdt for MVRegister<T> {
+impl<T: Clone + PartialEq> Crdt for MVRegister<T> {
     type Value = Vec<T>;
 
     fn value(&self) -> Vec<T> {
         self.entries.iter().map(|(_, v)| v.clone()).collect()
     }
 
-    fn merge(&self, other: &Self) -> Self {
-        let mut all: Vec<(VectorClock, T)> = Vec::new();
-        for e in self.entries.iter().chain(other.entries.iter()) {
-            if !all.contains(e) {
-                all.push(e.clone());
+    /// Union both entry sets, retaining only entries not dominated by any other.
+    fn merge(&mut self, other: Self) {
+        let mut all: Vec<(VectorClock, T)> = self.entries.clone();
+        for e in other.entries {
+            if !all.contains(&e) {
+                all.push(e);
             }
         }
-        let entries = all
+        self.entries = all
             .iter()
             .filter(|(vc, _)| {
                 !all.iter()
@@ -60,7 +62,15 @@ impl<T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de>> Crdt for MVRe
             })
             .cloned()
             .collect();
-        MVRegister { entries }
+    }
+
+    /// Returns true if every entry in self is dominated by or equal to some entry in other.
+    fn compare(&self, other: &Self) -> bool {
+        self.entries.iter().all(|(vc, _)| {
+            other.entries.iter().any(|(ovc, _)| {
+                matches!(ovc.partial_order(vc), ClockOrder::After | ClockOrder::Equal)
+            })
+        })
     }
 }
 
@@ -143,8 +153,8 @@ mod tests {
         ra.write(1u32, vc_a.clone());
         let mut rb = MVRegister::new();
         rb.write(2u32, vc_b.clone());
-        let merged = ra.merge(&rb);
-        let mut vals = merged.value();
+        ra.merge(rb);
+        let mut vals = ra.value();
         vals.sort();
         assert_eq!(vals, vec![1, 2]);
     }
@@ -159,24 +169,37 @@ mod tests {
         ra.write(1u32, vc1);
         let mut rb = MVRegister::new();
         rb.write(2u32, vc2);
-        let merged = ra.merge(&rb);
-        assert_eq!(merged.value(), vec![2]);
+        ra.merge(rb);
+        assert_eq!(ra.value(), vec![2]);
     }
 
     proptest! {
         #[test]
         fn mv_commutative(a in arb_mv(), b in arb_mv()) {
-            prop_assert_eq!(a.merge(&b), b.merge(&a));
+            let mut a1 = a.clone();
+            a1.merge(b.clone());
+            let mut b1 = b.clone();
+            b1.merge(a.clone());
+            prop_assert_eq!(a1, b1);
         }
 
         #[test]
         fn mv_associative(a in arb_mv(), b in arb_mv(), c in arb_mv()) {
-            prop_assert_eq!(a.merge(&b).merge(&c), a.merge(&b.merge(&c)));
+            let mut ab = a.clone();
+            ab.merge(b.clone());
+            ab.merge(c.clone());
+            let mut bc = b.clone();
+            bc.merge(c.clone());
+            let mut a2 = a.clone();
+            a2.merge(bc);
+            prop_assert_eq!(ab, a2);
         }
 
         #[test]
         fn mv_idempotent(a in arb_mv()) {
-            prop_assert_eq!(a.merge(&a.clone()), a);
+            let mut a1 = a.clone();
+            a1.merge(a.clone());
+            prop_assert_eq!(a1, a);
         }
     }
 }
