@@ -66,8 +66,8 @@ impl<G: GossipBackend> AppState<G> {
         let mut canvas = self.canvas.write().await;
         canvas.merge(incoming);
         let snapshot = canvas.clone();
-        drop(canvas);
         self.advance_ts(max_ts);
+        drop(canvas);
         let _ = self.ws_tx.send(snapshot);
     }
 
