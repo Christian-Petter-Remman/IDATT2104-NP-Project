@@ -1,13 +1,29 @@
 use std::io;
+use std::net::SocketAddr;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use uuid::Uuid;
 
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// A peer's identity and reachable address.
+///
+/// `node_id` is the stable identifier used for self-detection and peer-map
+/// keying. `addr` is the address other peers should connect to.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PeerEntry {
+    pub node_id: Uuid,
+    pub addr: SocketAddr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GossipMessage<T> {
-    Sync(T),
+    Sync {
+        from: PeerEntry,
+        state: T,
+        known_peers: Vec<PeerEntry>,
+    },
 }
 
 pub async fn write_frame<W, T>(w: &mut W, msg: &GossipMessage<T>) -> io::Result<()>
