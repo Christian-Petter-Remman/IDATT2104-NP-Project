@@ -13,5 +13,5 @@ tracing = "0.1"
 rand = "0.8"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "test-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "io-std", "test-util"] }
 serde = { version = "1", features = ["derive"] }
