@@ -6,3 +6,4 @@ pub mod sets;
 pub mod traits;
 
 pub use traits::{Crdt, NodeId};
+pub use canvas::Rgba;
