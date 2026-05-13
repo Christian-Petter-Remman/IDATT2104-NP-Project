@@ -1,5 +1,6 @@
 use uuid::Uuid;
 
+/// Unique identifier for a node in the P2P network.
 pub type NodeId = Uuid;
 
 /// Trait for state-based Conflict-free Replicated Data Types
@@ -33,7 +34,7 @@ pub trait Crdt {
     /// It doesn't matter which two peers you merge first.
     /// 
     /// Repetition
-    /// /// `A.merge(A) == A`
+    /// `A.merge(A) == A`
     /// Network messages can be duplicated or retransmitted safely.
     fn merge(&mut self, other: Self);
 
