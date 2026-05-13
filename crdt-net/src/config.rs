@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use uuid::Uuid;
@@ -57,28 +57,5 @@ impl GossipConfig {
     pub fn with_mdns(mut self, enable: bool) -> Self {
         self.enable_mdns = enable;
         self
-    }
-
-    /// Resolve the address that should be advertised to peers, given the
-    /// configured `advertise_addr` and the bound `gossip_addr`.
-    pub(crate) fn resolved_advertise_addr(&self) -> std::io::Result<SocketAddr> {
-        if let Some(a) = self.advertise_addr {
-            return Ok(a);
-        }
-        let ip = self.gossip_addr.ip();
-        if !ip.is_unspecified() {
-            return Ok(self.gossip_addr);
-        }
-        // Bind is wildcard — pick a non-loopback IPv4 from the OS.
-        match local_ip_address::local_ip() {
-            Ok(IpAddr::V4(v4)) if !v4.is_loopback() => {
-                Ok(SocketAddr::new(IpAddr::V4(v4), self.gossip_addr.port()))
-            }
-            Ok(other) => Ok(SocketAddr::new(other, self.gossip_addr.port())),
-            Err(_) => Ok(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                self.gossip_addr.port(),
-            )),
-        }
     }
 }

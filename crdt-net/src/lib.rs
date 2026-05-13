@@ -2,14 +2,16 @@
 //!
 //! The crate exposes a generic [`GossipEngine`] over any type implementing
 //! [`crdt_core::Crdt`] plus serde traits. The engine periodically pushes the
-//! latest local state to up to two random peers over TCP and merges incoming
-//! states into the local snapshot, publishing the merged result on a
-//! broadcast channel.
+//! latest local state to up to two random peers over TCP, merges incoming
+//! states into the local snapshot, publishes the merged result on a
+//! broadcast channel, and (optionally) auto-discovers peers on the local
+//! network via mDNS.
 
 pub mod config;
+pub(crate) mod discovery;
 pub mod engine;
 pub mod message;
 
 pub use config::GossipConfig;
 pub use engine::GossipEngine;
-pub use message::{GossipMessage, MAX_FRAME};
+pub use message::{GossipMessage, MAX_FRAME, PeerEntry};
