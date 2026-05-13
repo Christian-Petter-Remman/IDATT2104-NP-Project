@@ -14,8 +14,22 @@ impl<T: Clone + PartialEq> LWWRegister<T> {
         Self { value, timestamp, node_id }
     }
 
-    pub fn set(&mut self, value: T, timestamp: u64, node_id: NodeId) {
-        self.merge(LWWRegister::new(value, timestamp, node_id));
+    /// Returns true if `other` would replace `self` in a merge.
+    fn is_superseded_by(&self, other: &Self) -> bool {
+        other.timestamp > self.timestamp
+            || (other.timestamp == self.timestamp && other.node_id > self.node_id)
+    }
+
+    /// Updates the register value if the new write wins.
+    /// Returns `true` if the value was updated, `false` if
+    /// the existing value has a higher or equal timestamp.
+    pub fn set(&mut self, value: T, timestamp: u64, node_id: NodeId) -> bool {
+        let incoming = LWWRegister::new(value, timestamp, node_id);
+        if self.is_superseded_by(&incoming) {
+            *self = incoming;
+            return true;
+        }
+        false
     }
 }
 
