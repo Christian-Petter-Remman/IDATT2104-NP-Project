@@ -155,9 +155,15 @@ pub struct PeerEntry {
 
 pub enum GossipMessage<T> {
     Sync {
-        from: PeerEntry,            // who I am + how to reach me
-        state: T,                   // my current CRDT snapshot
+        from: PeerEntry,             // who I am + how to reach me
+        state: T,                    // my current CRDT snapshot
         known_peers: Vec<PeerEntry>, // peers I'm aware of (capped at 64)
+        departed: Vec<Uuid>,         // tombstones I've absorbed
+    },
+    Goodbye {
+        from: PeerEntry,             // who is leaving
+        departed: Vec<Uuid>,         // tombstones (includes self.uuid)
+        known_peers: Vec<PeerEntry>, // who survives
     },
 }
 
@@ -172,6 +178,19 @@ where R: AsyncReadExt + Unpin, T: DeserializeOwned;
 snapshot of the sender's resolved peer map. Recipients merge new entries
 into their own registry. After one or two gossip rounds, a node that
 started knowing only one bootstrap peer ends up knowing the whole mesh.
+
+`departed` is the tombstone primitive (2P-Set semantics). Any UUID in
+`departed` is permanently dead: once a peer learns of it, it removes the
+matching entry from its resolved map and refuses to re-add it via
+peer-list gossip. `departed` rides on every outgoing `Sync` and `Goodbye`,
+so tombstones spread across the mesh exactly like state.
+
+`Goodbye` is structurally `Sync` minus the `state` field. A leaving peer
+emits one to a few survivors so the mesh learns of the departure
+immediately instead of waiting for the K-consecutive-failure heuristic to
+fire. The `T` parameter on `Goodbye` is phantom — the variant uses no
+field of type `T`, so a sender can construct `GossipMessage::<()>::Goodbye
+{...}` without parameterizing the engine over `T`.
 
 **Wire layout of one frame:**
 
