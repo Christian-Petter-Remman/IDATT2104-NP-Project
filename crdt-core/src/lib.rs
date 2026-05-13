@@ -1,14 +1,17 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Core CRDT traits and types.
+//!
+//! This crate intentionally has no I/O and no async. Concrete CRDTs and the
+//! `CanvasDocument` composite live here; the gossip transport lives in
+//! `crdt-net`, which is generic over any type implementing [`Crdt`].
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+/// State-based CRDT (CvRDT).
+///
+/// `merge` must be commutative, associative and idempotent:
+///   - `a.merge(&b) == b.merge(&a)`
+///   - `a.merge(&b).merge(&c) == a.merge(&b.merge(&c))`
+///   - `a.merge(&a) == a`
+pub trait Crdt: Clone {
+    type Value;
+    fn value(&self) -> Self::Value;
+    fn merge(&self, other: &Self) -> Self;
 }
