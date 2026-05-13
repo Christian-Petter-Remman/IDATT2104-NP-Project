@@ -54,6 +54,10 @@ impl CanvasDocument {
         self.users.value()
     }
 
+    pub fn max_pixel_timestamp(&self) -> u64 {
+        self.pixels.values().map(|r| r.timestamp()).max().unwrap_or(0)
+    }
+
     // TODO: wire cursor updates via API once crdt-net gossip is integrated
 }
 
@@ -94,6 +98,8 @@ pub struct CanvasView {
 
 impl From<&CanvasDocument> for CanvasView {
     fn from(doc: &CanvasDocument) -> Self {
+        let mut users: Vec<String> = doc.active_users().iter().map(|u| u.to_string()).collect();
+        users.sort();
         Self {
             pixels: doc.pixels.iter()
                 .map(|((x, y), r)| {
@@ -101,7 +107,7 @@ impl From<&CanvasDocument> for CanvasView {
                     (format!("{x}_{y}"), [a, b, c, d])
                 })
                 .collect(),
-            users: doc.active_users().iter().map(|u| u.to_string()).collect(),
+            users,
         }
     }
 }
@@ -151,11 +157,14 @@ mod tests {
 
     #[test]
     fn merge_idempotent() {
+        let user = Uuid::from_u128(7);
         let mut a = CanvasDocument::new();
         a.paint(0, 0, (1, 2, 3, 4), node(1), 5);
+        a.add_user(user, &node(1));
         let b = a.clone();
         a.merge(b);
         assert_eq!(get_pixel(&a, 0, 0), (1, 2, 3, 4));
+        assert!(a.active_users().contains(&user));
     }
 
     #[test]
@@ -168,7 +177,12 @@ mod tests {
         peer_b.add_user(user, &node(2));
         peer_b.remove_user(&user);
 
-        peer_a.merge(peer_b);
-        assert!(peer_a.active_users().contains(&user));
+        let mut a1 = peer_a.clone();
+        a1.merge(peer_b.clone());
+        assert!(a1.active_users().contains(&user));
+
+        let mut b1 = peer_b.clone();
+        b1.merge(peer_a.clone());
+        assert!(b1.active_users().contains(&user));
     }
 }

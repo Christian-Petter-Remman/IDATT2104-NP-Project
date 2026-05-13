@@ -9,6 +9,8 @@ pub trait GossipBackend: Send + Sync + 'static {
     fn publish(&self, doc: CanvasDocument);
 }
 
+const GOSSIP_CHANNEL_CAPACITY: usize = 64;
+
 /// No-op backend for running without a gossip layer (dev / testing).
 /// Holds the sender so receivers don't get Closed immediately.
 #[derive(Clone)]
@@ -18,7 +20,7 @@ pub struct NoopGossip {
 
 impl NoopGossip {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(1);
+        let (tx, _) = broadcast::channel(GOSSIP_CHANNEL_CAPACITY);
         Self { tx: Arc::new(tx) }
     }
 }

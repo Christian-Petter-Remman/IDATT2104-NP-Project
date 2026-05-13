@@ -62,11 +62,28 @@ impl<G: GossipBackend> AppState<G> {
     }
 
     pub async fn apply_gossip(&self, incoming: CanvasDocument) {
+        let max_ts = incoming.max_pixel_timestamp();
         let mut canvas = self.canvas.write().await;
         canvas.merge(incoming);
         let snapshot = canvas.clone();
         drop(canvas);
+        self.advance_ts(max_ts);
         let _ = self.ws_tx.send(snapshot);
+    }
+
+    /// Advances the timestamp counter to at least `seen`, so the next
+    /// local write beats any timestamp we just observed from a remote peer.
+    fn advance_ts(&self, seen: u64) {
+        loop {
+            let current = self.timestamp.load(Ordering::Relaxed);
+            if seen <= current { break; }
+            if self.timestamp
+                .compare_exchange(current, seen, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
     }
 }
 

@@ -16,6 +16,10 @@ impl<T: Clone + PartialEq> LWWRegister<T> {
     pub fn set(&mut self, value: T, timestamp: u64, node_id: NodeId) {
         self.merge(LWWRegister::new(value, timestamp, node_id));
     }
+
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
 }
 
 impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {
