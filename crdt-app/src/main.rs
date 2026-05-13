@@ -13,7 +13,7 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let node_id = Uuid::new_v4();
-    let state = AppState::new(node_id, NoopGossip);
+    let state = AppState::new(node_id, NoopGossip::new());
 
     // TODO: replace NoopGossip with crdt-net's GossipEngine once available.
     // GossipEngine must implement GossipBackend (see gossip.rs).

@@ -7,7 +7,7 @@ use axum::{
 };
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
-use crate::canvas::Rgba;
+use crate::canvas::{Rgba, CanvasView};
 use crate::state::AppState;
 use crate::gossip::GossipBackend;
 
@@ -36,7 +36,7 @@ async fn get_canvas<G: GossipBackend + Clone>(
     State(s): State<Arc<AppState<G>>>,
 ) -> impl IntoResponse {
     let canvas = s.canvas.read().await;
-    Json(canvas.clone())
+    Json(CanvasView::from(&*canvas))
 }
 
 async fn paint<G: GossipBackend + Clone>(
@@ -44,11 +44,7 @@ async fn paint<G: GossipBackend + Clone>(
     Json(req): Json<PaintRequest>,
 ) -> impl IntoResponse {
     let color: Rgba = (req.color[0], req.color[1], req.color[2], req.color[3]);
-    let ts = std::time::SystemTime::UNIX_EPOCH
-        .elapsed()
-        .unwrap_or_default()
-        .as_millis() as u64;
-    s.paint(req.x, req.y, color, ts).await;
+    s.paint(req.x, req.y, color).await;
     Json(serde_json::json!({ "ok": true }))
 }
 
@@ -71,7 +67,7 @@ async fn handle_ws<G: GossipBackend + Clone>(
 ) {
     {
         let canvas = state.canvas.read().await;
-        let Ok(msg) = serde_json::to_string(&*canvas) else {
+        let Ok(msg) = serde_json::to_string(&CanvasView::from(&*canvas)) else {
             tracing::error!("failed to serialize canvas state");
             return;
         };
@@ -83,7 +79,7 @@ async fn handle_ws<G: GossipBackend + Clone>(
     loop {
         match rx.recv().await {
             Ok(canvas) => {
-                let Ok(msg) = serde_json::to_string(&canvas) else {
+                let Ok(msg) = serde_json::to_string(&CanvasView::from(&canvas)) else {
                     tracing::error!("failed to serialize canvas state");
                     break;
                 };

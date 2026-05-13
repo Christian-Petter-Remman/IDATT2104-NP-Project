@@ -4,32 +4,29 @@ use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use crdt_core::traits::{Crdt, NodeId};
 use crdt_core::registers::lww_register::LWWRegister;
+use crdt_core::sets::ORSet;
 
 pub type Rgba = (u8, u8, u8, u8);
+/// Canvas is bounded to 256×256 by u8 coordinates.
+pub type PixelCoord = (u8, u8);
 pub const DEFAULT_PIXEL: Rgba = (255, 255, 255, 255);
-
-// PLACEHOLDER: replace with ORSet<Uuid> once sets module is merged.
-// ORSet required for concurrent-add-wins semantics on user membership.
-// Swap: use crdt_core::sets::or_set::ORSet; + change field type + update
-// add_user/remove_user/merge/compare to use ORSet API.
-type UserSet = std::collections::HashSet<Uuid>;
 
 /// Composite CRDT — the shared state gossiped between nodes.
 ///
 /// Pixels + cursors use LWWRegister (last-writer-wins).
-/// Users use ORSet (concurrent-add-wins) — placeholder until sets merge.
+/// Users use ORSet (concurrent-add-wins).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CanvasDocument {
-    pub pixels: HashMap<(u8, u8), LWWRegister<Rgba>>,
-    users: UserSet,
-    pub cursors: HashMap<Uuid, LWWRegister<(u8, u8)>>,
+    pub pixels: HashMap<PixelCoord, LWWRegister<Rgba>>,
+    users: ORSet<Uuid>,
+    pub cursors: HashMap<Uuid, LWWRegister<PixelCoord>>,
 }
 
 impl Default for CanvasDocument {
     fn default() -> Self {
         Self {
             pixels: HashMap::new(),
-            users: UserSet::new(),
+            users: ORSet::new(),
             cursors: HashMap::new(),
         }
     }
@@ -45,9 +42,19 @@ impl CanvasDocument {
             .set(color, timestamp, node_id);
     }
 
-    // TODO: wire cursor updates via API once crdt-net gossip is integrated
+    pub fn add_user(&mut self, user: Uuid, node_id: &NodeId) {
+        self.users.insert(user, node_id);
+    }
 
-    // TODO: replace UserSet with ORSet<Uuid> and expose add/remove/active_users via API
+    pub fn remove_user(&mut self, user: &Uuid) -> bool {
+        self.users.remove(user)
+    }
+
+    pub fn active_users(&self) -> std::collections::HashSet<Uuid> {
+        self.users.value()
+    }
+
+    // TODO: wire cursor updates via API once crdt-net gossip is integrated
 }
 
 impl Crdt for CanvasDocument {
@@ -62,10 +69,7 @@ impl Crdt for CanvasDocument {
                 Entry::Vacant(e) => { e.insert(reg); }
             }
         }
-        // TODO: replace with ORSet::merge once sets module merges
-        for user in other.users {
-            self.users.insert(user);
-        }
+        self.users.merge(other.users);
         for (uid, reg) in other.cursors {
             match self.cursors.entry(uid) {
                 Entry::Occupied(mut e) => e.get_mut().merge(reg),
@@ -77,8 +81,28 @@ impl Crdt for CanvasDocument {
     fn compare(&self, other: &Self) -> bool {
         self.pixels.iter().all(|(k, r)| other.pixels.get(k).map_or(false, |o| r.compare(o)))
             && self.cursors.iter().all(|(k, r)| other.cursors.get(k).map_or(false, |o| r.compare(o)))
-            // TODO: replace with ORSet::compare once sets module merges
-            && self.users.iter().all(|u| other.users.contains(u))
+            && self.users.compare(&other.users)
+    }
+}
+
+/// Client-facing view — strips CRDT metadata (timestamps, node ids).
+#[derive(Serialize)]
+pub struct CanvasView {
+    pub pixels: HashMap<String, [u8; 4]>,
+    pub users: Vec<String>,
+}
+
+impl From<&CanvasDocument> for CanvasView {
+    fn from(doc: &CanvasDocument) -> Self {
+        Self {
+            pixels: doc.pixels.iter()
+                .map(|((x, y), r)| {
+                    let (a, b, c, d) = r.value();
+                    (format!("{x}_{y}"), [a, b, c, d])
+                })
+                .collect(),
+            users: doc.active_users().iter().map(|u| u.to_string()).collect(),
+        }
     }
 }
 
@@ -125,5 +149,26 @@ mod tests {
         assert_eq!(get_pixel(&a1, 0, 0), get_pixel(&b1, 0, 0));
     }
 
-    // TODO: add concurrent-add-wins test once ORSet is merged in
+    #[test]
+    fn merge_idempotent() {
+        let mut a = CanvasDocument::new();
+        a.paint(0, 0, (1, 2, 3, 4), node(1), 5);
+        let b = a.clone();
+        a.merge(b);
+        assert_eq!(get_pixel(&a, 0, 0), (1, 2, 3, 4));
+    }
+
+    #[test]
+    fn user_add_wins_on_concurrent_remove() {
+        let user = Uuid::from_u128(99);
+        let mut peer_a = CanvasDocument::new();
+        peer_a.add_user(user, &node(1));
+
+        let mut peer_b = CanvasDocument::new();
+        peer_b.add_user(user, &node(2));
+        peer_b.remove_user(&user);
+
+        peer_a.merge(peer_b);
+        assert!(peer_a.active_users().contains(&user));
+    }
 }

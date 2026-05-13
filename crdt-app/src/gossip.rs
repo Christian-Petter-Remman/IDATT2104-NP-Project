@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use crate::canvas::CanvasDocument;
 
@@ -9,12 +10,22 @@ pub trait GossipBackend: Send + Sync + 'static {
 }
 
 /// No-op backend for running without a gossip layer (dev / testing).
+/// Holds the sender so receivers don't get Closed immediately.
 #[derive(Clone)]
-pub struct NoopGossip;
+pub struct NoopGossip {
+    tx: Arc<broadcast::Sender<CanvasDocument>>,
+}
+
+impl NoopGossip {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(1);
+        Self { tx: Arc::new(tx) }
+    }
+}
 
 impl GossipBackend for NoopGossip {
     fn subscribe(&self) -> broadcast::Receiver<CanvasDocument> {
-        broadcast::channel(1).1
+        self.tx.subscribe()
     }
     fn publish(&self, _doc: CanvasDocument) {}
 }
