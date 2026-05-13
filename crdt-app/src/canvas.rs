@@ -4,19 +4,24 @@ use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use crdt_core::traits::{Crdt, NodeId};
 use crdt_core::registers::lww_register::LWWRegister;
-use crdt_core::sets::or_set::ORSet;
 
 pub type Rgba = (u8, u8, u8, u8);
 pub const DEFAULT_PIXEL: Rgba = (255, 255, 255, 255);
 
+// PLACEHOLDER: replace with ORSet<Uuid> once sets module is merged.
+// ORSet required for concurrent-add-wins semantics on user membership.
+// Swap: use crdt_core::sets::or_set::ORSet; + change field type + update
+// add_user/remove_user/merge/compare to use ORSet API.
+type UserSet = std::collections::HashSet<Uuid>;
+
 /// Composite CRDT — the shared state gossiped between nodes.
 ///
 /// Pixels + cursors use LWWRegister (last-writer-wins).
-/// Users use ORSet (concurrent-add-wins).
+/// Users use ORSet (concurrent-add-wins) — placeholder until sets merge.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CanvasDocument {
     pub pixels: HashMap<(u8, u8), LWWRegister<Rgba>>,
-    users: ORSet<Uuid>,
+    users: UserSet,
     pub cursors: HashMap<Uuid, LWWRegister<(u8, u8)>>,
 }
 
@@ -24,7 +29,7 @@ impl Default for CanvasDocument {
     fn default() -> Self {
         Self {
             pixels: HashMap::new(),
-            users: ORSet::new(),
+            users: UserSet::new(),
             cursors: HashMap::new(),
         }
     }
@@ -53,7 +58,7 @@ impl CanvasDocument {
 
     pub fn add_user(&mut self, user_id: Uuid) { self.users.insert(user_id); }
     pub fn remove_user(&mut self, user_id: &Uuid) { self.users.remove(user_id); }
-    pub fn active_users(&self) -> Vec<Uuid> { self.users.value() }
+    pub fn active_users(&self) -> Vec<Uuid> { self.users.iter().copied().collect() }
 }
 
 impl Crdt for CanvasDocument {
@@ -68,7 +73,10 @@ impl Crdt for CanvasDocument {
                 Entry::Vacant(e) => { e.insert(reg); }
             }
         }
-        self.users.merge(other.users);
+        // TODO: replace with ORSet::merge once sets module merges
+        for user in other.users {
+            self.users.insert(user);
+        }
         for (uid, reg) in other.cursors {
             match self.cursors.entry(uid) {
                 Entry::Occupied(mut e) => e.get_mut().merge(reg),
@@ -80,7 +88,8 @@ impl Crdt for CanvasDocument {
     fn compare(&self, other: &Self) -> bool {
         self.pixels.iter().all(|(k, r)| other.pixels.get(k).map_or(false, |o| r.compare(o)))
             && self.cursors.iter().all(|(k, r)| other.cursors.get(k).map_or(false, |o| r.compare(o)))
-            && self.users.compare(&other.users)
+            // TODO: replace with ORSet::compare once sets module merges
+            && self.users.iter().all(|u| other.users.contains(u))
     }
 }
 
@@ -124,12 +133,12 @@ mod tests {
     }
 
     #[test]
-    fn orset_add_wins_concurrent() {
-        let mut a = CanvasDocument::new();
-        let mut b = CanvasDocument::new();
-        a.add_user(node(1));
-        b.remove_user(&node(1)); // concurrent remove on b — b never saw the add
-        a.merge(b);
-        assert!(a.active_users().contains(&node(1)));
+    fn add_remove_user() {
+        let mut doc = CanvasDocument::new();
+        doc.add_user(node(1));
+        assert!(doc.active_users().contains(&node(1)));
+        doc.remove_user(&node(1));
+        assert!(!doc.active_users().contains(&node(1)));
     }
+    // TODO: add concurrent-add-wins test once ORSet is merged in
 }
