@@ -8,6 +8,7 @@ use crate::traits::{Crdt, NodeId};
 ///
 /// Used directly by [`super::registers::MVRegister`] to detect concurrent
 /// writes, and as a Lamport timestamp source for [`super::registers::LWWRegister`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VectorClock {
     pub(crate) clock: HashMap<NodeId, u64>,

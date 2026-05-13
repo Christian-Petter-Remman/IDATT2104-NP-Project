@@ -1,6 +1,7 @@
 use crate::traits::Crdt;
 use crate::clocks::{ClockOrder, VectorClock};
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct MVRegister<T> {
     entries: Vec<(VectorClock, T)>,

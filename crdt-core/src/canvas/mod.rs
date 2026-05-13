@@ -1,1 +1,1 @@
-// CanvasDocument
+// CanvasDocument moved to crdt-app
