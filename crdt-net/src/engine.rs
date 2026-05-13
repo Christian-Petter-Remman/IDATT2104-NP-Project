@@ -112,6 +112,7 @@ fn spawn_listener<T>(
                 accept = listener.accept() => {
                     match accept {
                         Ok((stream, peer)) => {
+                            debug!(%peer, "accepted gossip connection");
                             let local = local.clone();
                             let merged = merged.clone();
                             tokio::spawn(handle_connection::<T>(stream, peer, local, merged));
@@ -136,6 +137,7 @@ async fn handle_connection<T>(
 {
     match read_frame::<_, T>(&mut stream).await {
         Ok(GossipMessage::Sync(remote)) => {
+            debug!(%peer, "received Sync, merging");
             let merged_value = local.borrow().merge(&remote);
             // Receivers may not exist yet; that's fine.
             let _ = merged.send(merged_value);
@@ -175,8 +177,9 @@ fn spawn_ticker<T>(
                     for addr in targets {
                         let payload = snapshot.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = send_sync::<T>(addr, &payload).await {
-                                warn!(%addr, error = %e, "gossip send failed");
+                            match send_sync::<T>(addr, &payload).await {
+                                Ok(()) => debug!(%addr, "gossip send ok"),
+                                Err(e) => warn!(%addr, error = %e, "gossip send failed"),
                             }
                         });
                     }

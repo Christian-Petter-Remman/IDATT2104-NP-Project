@@ -115,6 +115,16 @@ fn parse_args() -> Args {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    // Initialize tracing so engine WARN/DEBUG/TRACE lines actually print.
+    // Override level with e.g.  $env:RUST_LOG="crdt_net=debug"
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("crdt_net=info,warn")),
+        )
+        .with_target(false)
+        .init();
+
     let args = parse_args();
     let node_id = Uuid::new_v4();
     let gossip_addr: SocketAddr = format!("{}:{}", args.bind, args.port).parse().unwrap();
@@ -146,16 +156,23 @@ async fn main() -> std::io::Result<()> {
         });
     }
 
-    // Print every state change.
+    // Print only when the state *really* changes.
+    // (watch::Sender::send_modify fires `changed` even when the value is
+    // identical, so we dedupe against the last value we printed.)
     {
         let mut rx = state_rx.clone();
+        let mut last = rx.borrow().clone();
+        println!("STATE total={} counts={:?}", last.total(), last.counts);
         tokio::spawn(async move {
             loop {
                 if rx.changed().await.is_err() {
                     return;
                 }
                 let s = rx.borrow().clone();
-                println!("STATE total={} counts={:?}", s.total(), s.counts);
+                if s != last {
+                    println!("STATE total={} counts={:?}", s.total(), s.counts);
+                    last = s;
+                }
             }
         });
     }

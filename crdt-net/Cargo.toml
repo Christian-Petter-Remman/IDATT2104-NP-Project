@@ -15,3 +15,4 @@ rand = "0.8"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "io-std", "test-util"] }
 serde = { version = "1", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
