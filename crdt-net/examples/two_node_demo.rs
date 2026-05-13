@@ -65,28 +65,50 @@ struct Args {
 }
 
 fn parse_args() -> Args {
+    fn die(msg: impl std::fmt::Display) -> ! {
+        eprintln!("error: {msg}");
+        eprintln!(
+            "usage: two_node_demo --port <P> [--bind <IP>] [--peer IP:PORT]...\n\
+             example: two_node_demo --port 9090 --peer 192.168.1.57:9090"
+        );
+        std::process::exit(2);
+    }
+
     let mut bind: String = "0.0.0.0".to_string();
     let mut port: Option<u16> = None;
     let mut peers = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--bind" => bind = it.next().expect("--bind needs value"),
-            "--port" => port = Some(it.next().expect("--port needs value").parse().unwrap()),
-            "--peer" => peers.push(it.next().expect("--peer needs value").parse().unwrap()),
+            "--bind" => bind = it.next().unwrap_or_else(|| die("--bind needs value")),
+            "--port" => {
+                let raw = it.next().unwrap_or_else(|| die("--port needs value"));
+                port = Some(
+                    raw.parse()
+                        .unwrap_or_else(|e| die(format!("--port {raw}: {e}"))),
+                );
+            }
+            "--peer" => {
+                let raw = it.next().unwrap_or_else(|| die("--peer needs value"));
+                let addr: SocketAddr = raw
+                    .parse()
+                    .unwrap_or_else(|e| die(format!("--peer {raw}: {e} (expected IP:PORT)")));
+                peers.push(addr);
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: two_node_demo --port <P> [--bind <IP>] [--peer addr]...\n\
-                     defaults: --bind 0.0.0.0 (listen on all interfaces)"
+                    "usage: two_node_demo --port <P> [--bind <IP>] [--peer IP:PORT]...\n\
+                     defaults: --bind 0.0.0.0 (listen on all interfaces)\n\
+                     example: two_node_demo --port 9090 --peer 192.168.1.57:9090"
                 );
                 std::process::exit(0);
             }
-            other => panic!("unknown arg: {other}"),
+            other => die(format!("unknown arg: {other}")),
         }
     }
     Args {
         bind,
-        port: port.expect("--port is required"),
+        port: port.unwrap_or_else(|| die("--port is required")),
         peers,
     }
 }
