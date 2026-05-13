@@ -160,3 +160,147 @@ where
         self.counter = self.counter.max(other.counter);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::{Crdt, NodeId};
+    use uuid::Uuid;
+
+    fn node(n: u128) -> NodeId {
+        Uuid::from_u128(n)
+    }
+
+    #[test]
+    fn insert_and_contains() {
+        let mut set = ORSet::new();
+        let a = node(1);
+        assert!(!set.contains(&"milk"));
+        set.insert("milk", &a);
+        assert!(set.contains(&"milk"));
+    }
+
+    #[test]
+    fn remove_and_read() {
+        let mut set = ORSet::new();
+        let a = node(1);
+        set.insert("milk", &a);
+        set.remove(&"milk");
+        assert!(!set.contains(&"milk"));
+
+        // re-add works unlike in TwoPSet
+        set.insert("milk", &a);
+        assert!(set.contains(&"milk"));
+    }
+
+    #[test]
+    fn remove_nonexistent_returns_false() {
+        let mut set: ORSet<&str> = ORSet::new();
+        assert!(!set.remove(&"milk"));
+    }
+
+    #[test]
+    fn value_returns_active_elements() {
+        let mut set = ORSet::new();
+        let a = node(1);
+        set.insert("milk", &a);
+        set.insert("eggs", &a);
+        set.remove(&"milk");
+        assert_eq!(set.value(), HashSet::from(["eggs"]));
+    }
+
+    #[test]
+    fn concurrent_add_and_remove_add_wins() {
+        // Peer A adds "milk", peer B independently adds then removes "milk"
+        // After merge: "milk" survives because A's tag was never tombstoned
+        let a = node(1);
+        let b = node(2);
+
+        let mut peer_a = ORSet::new();
+        peer_a.insert("milk", &a);
+
+        let mut peer_b = ORSet::new();
+        peer_b.insert("milk", &b);
+        peer_b.remove(&"milk");
+
+        peer_a.merge(peer_b);
+        assert!(peer_a.contains(&"milk")); // add wins, not removed like in 2P
+    }
+
+    #[test]
+    fn merge_commutativity() {
+        let a = node(1);
+        let b = node(2);
+
+        let mut peer_a = ORSet::new();
+        peer_a.insert("milk", &a);
+        peer_a.insert("bread", &a);
+
+        let mut peer_b = ORSet::new();
+        peer_b.insert("eggs", &b);
+        peer_b.insert("milk", &b);
+        peer_b.remove(&"milk");
+
+        let mut ab = peer_a.clone();
+        ab.merge(peer_b.clone());
+        let mut ba = peer_b.clone();
+        ba.merge(peer_a.clone());
+
+        assert_eq!(ab.value(), ba.value());
+    }
+
+    #[test]
+    fn merge_idempotency() {
+        let mut set = ORSet::new();
+        let a = node(1);
+        set.insert("milk", &a);
+        set.insert("eggs", &a);
+        set.remove(&"milk");
+        let before = set.value();
+        set.merge(set.clone());
+        assert_eq!(set.value(), before);
+    }
+
+    #[test]
+    fn merge_associativity() {
+        let a = node(1);
+        let b = node(2);
+        let c = node(3);
+
+        let mut peer_a = ORSet::new();
+        peer_a.insert("milk", &a);
+        let mut peer_b = ORSet::new();
+        peer_b.insert("eggs", &b);
+        let mut peer_c = ORSet::new();
+        peer_c.insert("bread", &c);
+
+        // (A merge B) merge C
+        let mut ab_c = peer_a.clone();
+        ab_c.merge(peer_b.clone());
+        ab_c.merge(peer_c.clone());
+
+        // A merge (B merge C)
+        let mut a_bc = peer_a.clone();
+        let mut bc = peer_b.clone();
+        bc.merge(peer_c.clone());
+        a_bc.merge(bc);
+
+        assert_eq!(ab_c.value(), a_bc.value());
+    }
+
+    #[test]
+    fn compare_subset() {
+        let a = node(1);
+        let b = node(2);
+
+        let mut small = ORSet::new();
+        small.insert("milk", &a);
+
+        let mut big = ORSet::new();
+        big.insert("milk", &a);
+        big.insert("eggs", &b);
+
+        assert!(small.compare(&big));
+        assert!(!big.compare(&small));
+    }
+}

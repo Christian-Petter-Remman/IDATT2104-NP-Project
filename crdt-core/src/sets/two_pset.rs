@@ -92,3 +92,102 @@ where
         self.removed.merge(other.removed);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::Crdt;
+
+    #[test]
+    fn insert_and_contains() {
+        let mut set = TwoPSet::new();
+        set.insert("milk");
+        assert!(set.contains(&"milk"));
+    }
+
+    #[test]
+    fn remove_makes_element_gone() {
+        let mut set = TwoPSet::new();
+        set.insert("milk");
+        assert!(set.remove("milk"));
+        assert!(!set.contains(&"milk"));
+    }
+
+    #[test]
+    fn remove_is_permanent() {
+        let mut set = TwoPSet::new();
+        set.insert("milk");
+        set.remove("milk");
+        assert!(!set.insert("milk"));
+        assert!(!set.contains(&"milk"));
+    }
+
+    #[test]
+    fn remove_nonexistent_returns_false() {
+        let mut set = TwoPSet::new();
+        assert!(!set.remove("milk"));
+    }
+
+    #[test]
+    fn value_excludes_removed() {
+        let mut set = TwoPSet::new();
+        set.insert("milk");
+        set.insert("eggs");
+        set.remove("milk");
+        assert_eq!(set.value(), HashSet::from(["eggs"]));
+    }
+
+    #[test]
+    fn merge_commutativity() {
+        let mut a = TwoPSet::new();
+        a.insert("milk");
+        let mut b = TwoPSet::new();
+        b.insert("eggs");
+        b.insert("milk");
+        b.remove("milk");
+
+        let mut ab = a.clone();
+        ab.merge(b.clone());
+        let mut ba = b.clone();
+        ba.merge(a.clone());
+
+        assert_eq!(ab.value(), ba.value());
+    }
+
+    #[test]
+    fn merge_remove_wins_over_add() {
+        // peer A has "milk", peer B removed "milk"
+        // after merge: "milk" is gone (remove-wins in 2PSet)
+        let mut a = TwoPSet::new();
+        a.insert("milk");
+        let mut b = TwoPSet::new();
+        b.insert("milk");
+        b.remove("milk");
+
+        a.merge(b);
+        assert!(!a.contains(&"milk"));
+    }
+
+    #[test]
+    fn merge_idempotency() {
+        let mut a = TwoPSet::new();
+        a.insert("milk");
+        a.insert("eggs");
+        a.remove("milk");
+        let before = a.value();
+        a.merge(a.clone());
+        assert_eq!(a.value(), before);
+    }
+
+    #[test]
+    fn compare_subset() {
+        let mut a = TwoPSet::new();
+        a.insert("milk");
+        let mut b = TwoPSet::new();
+        b.insert("milk");
+        b.insert("eggs");
+
+        assert!(a.compare(&b));
+        assert!(!b.compare(&a));
+    }
+}
