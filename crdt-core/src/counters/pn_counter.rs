@@ -1,5 +1,5 @@
-use crate::traits::{Crdt, NodeId};
 use super::g_counter::GCounter;
+use crate::traits::{Crdt, NodeId};
 
 /// Positive-Negative counter.
 ///
@@ -30,7 +30,9 @@ impl PNCounter {
 }
 
 impl Default for PNCounter {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Crdt for PNCounter {
@@ -46,8 +48,7 @@ impl Crdt for PNCounter {
     }
 
     fn compare(&self, other: &Self) -> bool {
-        self.increments.compare(&other.increments)
-            && self.decrements.compare(&other.decrements)
+        self.increments.compare(&other.increments) && self.decrements.compare(&other.decrements)
     }
 }
 
@@ -56,7 +57,9 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    fn n(id: u128) -> NodeId { Uuid::from_u128(id) }
+    fn n(id: u128) -> NodeId {
+        Uuid::from_u128(id)
+    }
 
     #[test]
     fn new_starts_at_zero() {
@@ -94,8 +97,10 @@ mod tests {
         a.decrement(n(1));
         let mut b = PNCounter::new();
         b.increment(n(2));
-        let mut ab = a.clone(); ab.merge(b.clone());
-        let mut ba = b.clone(); ba.merge(a.clone());
+        let mut ab = a.clone();
+        ab.merge(b.clone());
+        let mut ba = b.clone();
+        ba.merge(a.clone());
         assert_eq!(ab.value(), ba.value());
     }
 

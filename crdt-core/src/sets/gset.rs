@@ -9,7 +9,7 @@ use crate::traits::Crdt;
 
 /// A grow-only set where elements can be added but never removed.
 /// Is a set union, guaranteeing convergence across peers
-/// 
+///
 /// Peer A: {"milk", "bread"}
 /// Peer B: {"milk", "eggs"}
 /// will give us
@@ -41,7 +41,6 @@ where
     /// Creates an empty GSet.
     pub fn new() -> Self {
         Self::default()
-
     }
 
     /// Adds an element to the set. Duplicate inserts are ignored.
@@ -95,8 +94,8 @@ mod tests {
     #[test]
     fn duplicate_insert_ignored() {
         let mut set = GSet::new();
-        assert!(set.insert("milk"));   // first add will be true
-        assert!(!set.insert("milk"));  // duplicate will be ignored aka. return false
+        assert!(set.insert("milk")); // first add will be true
+        assert!(!set.insert("milk")); // duplicate will be ignored aka. return false
     }
 
     #[test]
@@ -152,7 +151,7 @@ mod tests {
         b.insert("milk");
         b.insert("eggs");
 
-        assert!(a.compare(&b));   // a in b
-        assert!(!b.compare(&a));  // b not in a
+        assert!(a.compare(&b)); // a in b
+        assert!(!b.compare(&a)); // b not in a
     }
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::traits::Crdt;
 use crate::clocks::{ClockOrder, VectorClock};
+use crate::traits::Crdt;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
@@ -18,7 +18,9 @@ impl<T: Clone + PartialEq> PartialEq for MVRegister<T> {
 
 impl<T: Clone + PartialEq> Default for MVRegister<T> {
     fn default() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 }
 
@@ -30,7 +32,10 @@ impl<T: Clone + PartialEq> MVRegister<T> {
     pub fn write(&mut self, value: T, clock: VectorClock) {
         // Remove entries dominated by or equal to the new clock (same logical time = replace).
         self.entries.retain(|(vc, _)| {
-            !matches!(clock.partial_order(vc), ClockOrder::After | ClockOrder::Equal)
+            !matches!(
+                clock.partial_order(vc),
+                ClockOrder::After | ClockOrder::Equal
+            )
         });
         let dominated = self
             .entries
@@ -80,11 +85,13 @@ impl<T: Clone + PartialEq> Crdt for MVRegister<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::NodeId;
     use proptest::prelude::*;
     use uuid::Uuid;
-    use crate::traits::NodeId;
 
-    fn n(id: u128) -> NodeId { Uuid::from_u128(id) }
+    fn n(id: u128) -> NodeId {
+        Uuid::from_u128(id)
+    }
 
     fn arb_node() -> impl Strategy<Value = NodeId> {
         prop::sample::select(vec![n(1), n(2), n(3)])

@@ -4,13 +4,13 @@
 //! tagging each add operation with a unique identifier.
 //! Concurrent add and remove of the same element results in
 //! the element being present.
+use crate::traits::{Crdt, NodeId};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use serde::{Serialize, Deserialize};
-use crate::traits::{Crdt, NodeId};
 
 /// Unique identifier for a single add operation.
-/// 
+///
 /// The (node_id, seq) pair is guaranteed unique across all peers.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -45,15 +45,15 @@ where
 {
     fn default() -> Self {
         Self {
-             entries: HashMap::new(),
+            entries: HashMap::new(),
             removed_tags: HashSet::new(),
-            counter: 0
+            counter: 0,
         }
     }
 }
 
 /// Implementation with specific logic for re-adding items
-/// 
+///
 /// Functions like this:
 /// Peer A: adds "milk" -> tag (A,1)
 /// Peer B: adds "milk" -> tag (B,1), then removes "milk" -> `removed_tags` {(B,1)}
@@ -67,7 +67,7 @@ where
     T: Eq + Hash + Clone,
 {
     pub fn new() -> Self {
-        Self::default()    
+        Self::default()
     }
 
     pub fn insert(&mut self, element: T, node_id: &NodeId) {
@@ -76,10 +76,7 @@ where
             node_id: *node_id,
             seq: self.counter,
         };
-        self.entries
-            .entry(element)
-            .or_default()
-            .insert(tag);
+        self.entries.entry(element).or_default().insert(tag);
     }
 
     pub fn remove(&mut self, element: &T) -> bool {
@@ -94,7 +91,6 @@ where
         self.entries.contains_key(element)
     }
 }
-
 
 /// Merge combines two replicas by keeping every tag that
 /// neither side has tombstoned:
@@ -137,7 +133,7 @@ where
     ///
     /// A tag survives if it exists in either replica and
     /// is not tombstoned (in `removed_tags`) by either replica.
-    /// 
+    ///
     /// Consist of five steps:
     /// 1: Combine both sides' removal knowledge.
     ///     We do this FIRST because we need the full picture
@@ -153,9 +149,7 @@ where
         self.removed_tags.extend(other.removed_tags.iter().cloned());
 
         for (element, other_tags) in other.entries {
-            let local = self.entries
-                .entry(element)
-                .or_default();
+            let local = self.entries.entry(element).or_default();
             for tag in other_tags {
                 if !self.removed_tags.contains(&tag) {
                     local.insert(tag);
@@ -177,20 +171,16 @@ where
 mod tests {
     use super::*;
     use crate::traits::{Crdt, NodeId};
-    use uuid::Uuid;
-    use proptest::prelude::*;
     use proptest::collection::vec as prop_vec;
+    use proptest::prelude::*;
+    use uuid::Uuid;
 
     fn node(n: u128) -> NodeId {
         Uuid::from_u128(n)
     }
 
     fn arb_orset() -> impl Strategy<Value = ORSet<u8>> {
-        prop_vec(
-            (0u8..=3u8, 0usize..3usize, proptest::bool::ANY),
-            0..10,
-        )
-        .prop_map(|ops| {
+        prop_vec((0u8..=3u8, 0usize..3usize, proptest::bool::ANY), 0..10).prop_map(|ops| {
             let nodes = [node(1), node(2), node(3)];
             let mut set = ORSet::new();
             for (elem, node_idx, is_remove) in ops {
@@ -336,7 +326,7 @@ mod tests {
         assert!(small.compare(&big));
         assert!(!big.compare(&small));
     }
-       proptest! {
+    proptest! {
         #[test]
         fn orset_commutative(a in arb_orset(), b in arb_orset()) {
             let mut ab = a.clone();

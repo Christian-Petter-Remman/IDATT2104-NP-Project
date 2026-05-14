@@ -1,15 +1,14 @@
-use axum::{
-    Router,
-    routing::{get, post},
-    extract::{State, ws::WebSocketUpgrade},
-    Json,
-    response::IntoResponse,
-};
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use crate::canvas::{Rgba, CanvasView};
-use crate::state::AppState;
+use crate::canvas::{CanvasView, Rgba};
 use crate::gossip::GossipBackend;
+use crate::state::AppState;
+use axum::{
+    extract::{ws::WebSocketUpgrade, State},
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub struct PaintRequest {
@@ -51,7 +50,9 @@ async fn paint<G: GossipBackend + Clone>(
 async fn node_info<G: GossipBackend + Clone>(
     State(s): State<Arc<AppState<G>>>,
 ) -> impl IntoResponse {
-    Json(NodeInfo { id: s.node_id.to_string() })
+    Json(NodeInfo {
+        id: s.node_id.to_string(),
+    })
 }
 
 async fn ws_handler<G: GossipBackend + Clone + 'static>(
@@ -71,7 +72,11 @@ async fn handle_ws<G: GossipBackend + Clone>(
             tracing::error!("failed to serialize canvas state");
             return;
         };
-        if socket.send(axum::extract::ws::Message::Text(msg.into())).await.is_err() {
+        if socket
+            .send(axum::extract::ws::Message::Text(msg.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -83,7 +88,11 @@ async fn handle_ws<G: GossipBackend + Clone>(
                     tracing::error!("failed to serialize canvas state");
                     break;
                 };
-                if socket.send(axum::extract::ws::Message::Text(msg.into())).await.is_err() {
+                if socket
+                    .send(axum::extract::ws::Message::Text(msg.into()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }

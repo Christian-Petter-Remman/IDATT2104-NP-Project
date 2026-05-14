@@ -12,7 +12,11 @@ pub struct LWWRegister<T> {
 
 impl<T: Clone + PartialEq> LWWRegister<T> {
     pub fn new(value: T, timestamp: u64, node_id: NodeId) -> Self {
-        Self { value, timestamp, node_id }
+        Self {
+            value,
+            timestamp,
+            node_id,
+        }
     }
 
     /// Returns true if `other` would replace `self` in a merge.
@@ -72,7 +76,9 @@ mod tests {
     use proptest::prelude::*;
     use uuid::Uuid;
 
-    fn n(id: u128) -> NodeId { Uuid::from_u128(id) }
+    fn n(id: u128) -> NodeId {
+        Uuid::from_u128(id)
+    }
 
     fn arb_lww() -> impl Strategy<Value = LWWRegister<u32>> {
         (0u32..=100u32, 0u64..=10u64, 0usize..3).prop_map(|(value, timestamp, idx)| {
