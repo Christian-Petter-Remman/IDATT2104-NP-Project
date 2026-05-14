@@ -48,6 +48,7 @@ pub trait Crdt : Clone {
     fn merge(&mut self, other: Self);
 
     /// Returns `true` if self is a subset of other.
+    /// Returns `true` if self is a subset of other.
     ///
     /// If `self.compare(other)` is `true`, then `self.merge(other)` would
     /// result in `other` (i.e. merging is not required for the other side).

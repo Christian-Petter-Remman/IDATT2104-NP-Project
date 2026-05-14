@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::traits::{Crdt, NodeId};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LWWRegister<T> {
     value: T,
     timestamp: u64,
@@ -30,6 +31,14 @@ impl<T: Clone + PartialEq> LWWRegister<T> {
             return true;
         }
         false
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
     }
 }
 

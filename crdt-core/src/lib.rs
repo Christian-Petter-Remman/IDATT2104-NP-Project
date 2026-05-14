@@ -1,4 +1,3 @@
-pub mod canvas;
 pub mod clocks;
 pub mod counters;
 pub mod registers;

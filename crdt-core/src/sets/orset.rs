@@ -12,7 +12,8 @@ use crate::traits::{Crdt, NodeId};
 /// Unique identifier for a single add operation.
 /// 
 /// The (node_id, seq) pair is guaranteed unique across all peers.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tag {
     node_id: NodeId,
     seq: u64,
@@ -23,7 +24,8 @@ pub struct Tag {
 /// Each add creates a unique [`Tag`]. Remove only tombstones tags
 /// that are currently visible. A concurrent add (with an unseen tag)
 /// survives a concurrent remove.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ORSet<T>
 where
     T: Eq + Hash + Clone,
@@ -176,9 +178,30 @@ mod tests {
     use super::*;
     use crate::traits::{Crdt, NodeId};
     use uuid::Uuid;
+    use proptest::prelude::*;
+    use proptest::collection::vec as prop_vec;
 
     fn node(n: u128) -> NodeId {
         Uuid::from_u128(n)
+    }
+
+    fn arb_orset() -> impl Strategy<Value = ORSet<u8>> {
+        prop_vec(
+            (0u8..=3u8, 0usize..3usize, proptest::bool::ANY),
+            0..10,
+        )
+        .prop_map(|ops| {
+            let nodes = [node(1), node(2), node(3)];
+            let mut set = ORSet::new();
+            for (elem, node_idx, is_remove) in ops {
+                if is_remove {
+                    set.remove(&elem);
+                } else {
+                    set.insert(elem, &nodes[node_idx]);
+                }
+            }
+            set
+        })
     }
 
     #[test]
@@ -312,5 +335,36 @@ mod tests {
 
         assert!(small.compare(&big));
         assert!(!big.compare(&small));
+    }
+       proptest! {
+        #[test]
+        fn orset_commutative(a in arb_orset(), b in arb_orset()) {
+            let mut ab = a.clone();
+            ab.merge(b.clone());
+            let mut ba = b.clone();
+            ba.merge(a.clone());
+            prop_assert_eq!(ab.value(), ba.value());
+        }
+
+        #[test]
+        fn orset_idempotent(a in arb_orset()) {
+            let mut a1 = a.clone();
+            a1.merge(a.clone());
+            prop_assert_eq!(a1.value(), a.value());
+        }
+
+        #[test]
+        fn orset_associative(a in arb_orset(), b in arb_orset(), c in arb_orset()) {
+            let mut ab_c = a.clone();
+            ab_c.merge(b.clone());
+            ab_c.merge(c.clone());
+
+            let mut bc = b.clone();
+            bc.merge(c.clone());
+            let mut a_bc = a.clone();
+            a_bc.merge(bc);
+
+            prop_assert_eq!(ab_c.value(), a_bc.value());
+        }
     }
 }
