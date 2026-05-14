@@ -1,132 +1,203 @@
-use crate::canvas::{CanvasDocument, Rgba};
-use crate::gossip::GossipBackend;
+//! Application state, the state (source of truth) of the shared canvas.
+//!
+//! [`AppState`] sits between the network layer (`crdt-net`) and the API
+//! layer (`api.rs`). It holds the canvas document and this node's
+//! identity. Every mutation — whether from a local browser or a remote
+//! gossip merge — flows through here.
+//!
+//! **Timestamps**
+//!
+//! There is no standalone timestamp counter on `AppState`. Timestamps
+//! live on the [`CanvasDocument`]'s own `VectorClock`, which is part of
+//! the replicated state. When a document is gossiped to another peer,
+//! the clock travels with it and merges automatically, there is no 
+//! manual syncing needed.
+//!
+//! **Why all methods are synchronous**
+//!
+//! State lives inside a [`watch::Sender`], and all writes use its
+//! [`send_modify`](watch::Sender::send_modify) method, which is sync.
+//! This has two practical benefits:
+//!
+//! - The closure runs to completion without yielding, so there is no
+//!   risk of holding a lock across an await point.
+//! - When we add delta support, the same closure can mutate the document
+//!   and compute the diff in one atomic step — no gap where another
+//!   write could sneak in.
+//!
+//! The tradeoff is that the closure blocks a tokio worker thread for its
+//! duration. For our canvas this is microseconds.
+
+use crate::canvas::CanvasDocument;
 use crdt_core::Crdt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::watch;
 use uuid::Uuid;
 
-pub struct AppState<G: GossipBackend> {
-    pub node_id: Uuid,
-    pub canvas: RwLock<CanvasDocument>,
-    pub gossip: G,
-    pub ws_tx: broadcast::Sender<CanvasDocument>,
-    timestamp: AtomicU64,
+/// Shared application state, wrapped in `Arc` and passed to all tasks.
+///
+/// The canvas is stored inside a [`watch::Sender`] which serves as the
+/// single source of truth. Readers (WebSocket handlers, the gossip
+/// engine) obtain a [`watch::Receiver`] via [`subscribe`](Self::subscribe)
+/// and get notified whenever the document changes.
+///
+/// Only two fields: the node's identity and the canvas channel. The
+/// document's internal [`VectorClock`] handles all timestamp concerns,
+/// it increments on local mutations, and merges automatically when
+/// remote state arrives via gossip.
+pub struct AppState {
+    node_id: Uuid,
+    /// Single source of truth. Readers subscribe via `self.subscribe()`.
+    canvas: watch::Sender<CanvasDocument>,
 }
 
-const WS_BROADCAST_CAPACITY: usize = 64;
-
-impl<G: GossipBackend> AppState<G> {
-    pub fn new(node_id: Uuid, gossip: G) -> Arc<Self> {
-        let (ws_tx, _) = broadcast::channel(WS_BROADCAST_CAPACITY);
-        let now = std::time::SystemTime::UNIX_EPOCH
-            .elapsed()
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        Arc::new(Self {
+impl AppState {
+    pub fn new(node_id: Uuid) -> (Arc<Self>, watch::Receiver<CanvasDocument>) {
+        let (tx, rx) = watch::channel(CanvasDocument::new());
+        let state = Arc::new(Self {
             node_id,
-            canvas: RwLock::new(CanvasDocument::new()),
-            gossip,
-            ws_tx,
-            timestamp: AtomicU64::new(now),
-        })
+            canvas: tx,
+        });
+        (state, rx)
     }
 
-    /// Returns a strictly monotonically increasing timestamp.
-    /// Tracks wall clock; never goes backwards within a session.
-    pub fn next_ts(&self) -> u64 {
-        let wall = std::time::SystemTime::UNIX_EPOCH
-            .elapsed()
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        loop {
-            let current = self.timestamp.load(Ordering::Relaxed);
-            let next = wall.max(current) + 1;
-            if self
-                .timestamp
-                .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
-                .is_ok()
-            {
-                return next;
-            }
-        }
+    pub fn node_id(&self) -> Uuid {
+        self.node_id
     }
 
-    pub async fn paint(&self, x: u8, y: u8, color: Rgba) {
-        let ts = self.next_ts();
-        let mut canvas = self.canvas.write().await;
-        canvas.paint(x, y, color, self.node_id, ts);
-        let snapshot = canvas.clone();
-        drop(canvas);
-        let _ = self.ws_tx.send(snapshot.clone());
-        self.gossip.publish(snapshot);
+    /// Apply an arbitrary mutation to the canvas.
+    ///
+    /// The closure receives `&mut CanvasDocument` and this node's ID.
+    /// Timestamp handling is internal to the document, its `VectorClock`
+    /// is incremented by whichever mutation method the closure calls
+    /// (e.g. `paint`, `add_user`).
+    ///
+    /// Returns whatever the closure returns, so callers can extract
+    /// a value (e.g. a delta for future WebSocket delivery).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// state.mutate(|doc, node_id| {
+    ///     doc.paint(x, y, color, node_id);
+    /// });
+    /// ```
+    pub fn mutate<R>(&self, f: impl FnOnce(&mut CanvasDocument, Uuid) -> R) -> R {
+        let mut result = None;
+        self.canvas.send_modify(|doc| {
+            result = Some(f(doc, self.node_id));
+        });
+        // `send_modify` calls the closure exactly once, synchronously,
+        // before returning, `result` is always `Some` here.
+        result.expect("send_modify did not invoke closure")
+
     }
 
-    pub async fn apply_gossip(&self, incoming: CanvasDocument) {
-        let max_ts = incoming.max_pixel_timestamp();
-        let mut canvas = self.canvas.write().await;
-        canvas.merge(incoming);
-        let snapshot = canvas.clone();
-        self.advance_ts(max_ts);
-        drop(canvas);
-        let _ = self.ws_tx.send(snapshot);
+    /// Merge a remotely-received document into local state.
+    ///
+    /// The document's `VectorClock` merges as part of `Crdt::merge`,
+    /// so subsequent local writes will automatically have higher
+    /// timestamps than anything observed from the remote peer.
+    pub fn apply_gossip(&self, incoming: CanvasDocument) {
+        self.canvas.send_modify(|doc| doc.merge(incoming));
     }
 
-    /// Advances the timestamp counter to at least `seen`, so the next
-    /// local write beats any timestamp we just observed from a remote peer.
-    fn advance_ts(&self, seen: u64) {
-        loop {
-            let current = self.timestamp.load(Ordering::Relaxed);
-            if seen <= current {
-                break;
-            }
-            if self
-                .timestamp
-                .compare_exchange(current, seen, Ordering::SeqCst, Ordering::Relaxed)
-                .is_ok()
-            {
-                break;
-            }
-        }
+    /// Borrow the current canvas state.
+    ///
+    /// Returns a read guard into the watch channel. Hold it only
+    /// briefly, while it's alive, `mutate` and `apply_gossip` will
+    /// block waiting for the guard to drop.
+    ///
+    /// Use this for quick reads like serializing an HTTP response.
+    /// For longer-lived access, use [`snapshot`](Self::snapshot) instead.
+    pub fn canvas(&self) -> watch::Ref<'_, CanvasDocument> {
+        self.canvas.borrow()
+    }
+ 
+    /// Clone the current canvas state.
+    ///
+    /// Use this when you need an owned value that outlives a borrow.
+    /// E.g. computing a delta (clone before, mutate, diff after) or
+    /// passing state to another task across an await point.
+    ///
+    /// For quick read-only access, prefer [`canvas`](Self::canvas) to
+    /// avoid the clone.
+    pub fn snapshot(&self) -> CanvasDocument {
+        self.canvas.borrow().clone()
+    }
+
+    /// Obtain a receiver that is notified on every state change.
+    ///
+    /// Used by WebSocket handlers (to push updates to browsers) and
+    /// by `main.rs` (to feed the gossip engine).
+    pub fn subscribe(&self) -> watch::Receiver<CanvasDocument> {
+        self.canvas.subscribe()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gossip::NoopGossip;
-
-    fn node_id() -> Uuid {
-        Uuid::from_u128(1)
+ 
+    fn make() -> (Arc<AppState>, watch::Receiver<CanvasDocument>) {
+        AppState::new(Uuid::from_u128(1))
     }
-
-    #[tokio::test]
-    async fn paint_updates_canvas() {
-        let state = AppState::new(node_id(), NoopGossip::new());
-        state.paint(1, 2, (255, 0, 0, 255)).await;
-        let canvas = state.canvas.read().await;
-        let pixel = canvas.pixels.get(&(1, 2)).map(|r| r.value());
+ 
+    #[test]
+    fn paint_via_mutate() {
+        let (state, rx) = make();
+        state.mutate(|doc, node_id| {
+            doc.paint(1, 2, (255, 0, 0, 255), node_id);
+        });
+        let pixel = rx.borrow().pixels.get(&(1, 2)).map(|r| r.value());
         assert_eq!(pixel, Some((255, 0, 0, 255)));
     }
-
-    #[tokio::test]
-    async fn apply_gossip_merges_state() {
-        let state = AppState::new(node_id(), NoopGossip::new());
+ 
+    #[test]
+    fn mutate_returns_value() {
+        let (state, _rx) = make();
+        let result = state.mutate(|_doc, _id| 42);
+        assert_eq!(result, 42);
+    }
+ 
+    #[test]
+    fn apply_gossip_merges() {
+        let (state, rx) = make();
         let mut incoming = CanvasDocument::new();
-        incoming.paint(5, 5, (0, 255, 0, 255), node_id(), 999);
-        state.apply_gossip(incoming).await;
-        let canvas = state.canvas.read().await;
-        let pixel = canvas.pixels.get(&(5, 5)).map(|r| r.value());
+        incoming.paint(5, 5, (0, 255, 0, 255), Uuid::from_u128(2));
+        state.apply_gossip(incoming);
+        let pixel = rx.borrow().pixels.get(&(5, 5)).map(|r| r.value());
         assert_eq!(pixel, Some((0, 255, 0, 255)));
     }
-
-    #[tokio::test]
-    async fn next_ts_is_monotonic() {
-        let state = AppState::new(node_id(), NoopGossip::new());
-        let t1 = state.next_ts();
-        let t2 = state.next_ts();
-        let t3 = state.next_ts();
-        assert!(t1 < t2);
-        assert!(t2 < t3);
+ 
+    #[test]
+    fn gossip_merge_advances_clock() {
+        let (state, _rx) = make();
+ 
+        // Remote peer painted at a high clock value.
+        let mut incoming = CanvasDocument::new();
+        let remote_id = Uuid::from_u128(2);
+        incoming.paint(0, 0, (255, 0, 0, 255), remote_id);
+ 
+        state.apply_gossip(incoming);
+ 
+        // A subsequent local paint should have a higher timestamp
+        // than the remote one, because VectorClock merged.
+        state.mutate(|doc, node_id| {
+            doc.paint(0, 0, (0, 0, 255, 255), node_id);
+        });
+ 
+        // Local write should win (its clock entry is newer).
+        let pixel = state.canvas().pixels.get(&(0, 0)).map(|r| r.value());
+        assert_eq!(pixel, Some((0, 0, 255, 255)));
+    }
+ 
+    #[test]
+    fn subscribe_sees_changes() {
+        let (state, _rx) = make();
+        let mut watcher = state.subscribe();
+        state.mutate(|doc, id| doc.paint(0, 0, (1, 2, 3, 4), id));
+        assert!(watcher.has_changed().unwrap());
     }
 }
+ 
