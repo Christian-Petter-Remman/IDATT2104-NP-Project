@@ -1,4 +1,4 @@
-use crate::canvas::{CanvasView, LeaderboardEntry, Rgba};
+use crate::canvas::{CanvasDeltaView, CanvasView, LeaderboardEntry, Rgba};
 use crate::state::AppState;
 use axum::{
     extract::{ws::WebSocketUpgrade, State},
@@ -7,10 +7,24 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use crdt_core::DeltaCrdt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
+
+/// Envelope for messages pushed to the browser over the WebSocket.
+///
+/// `Snapshot` carries the full [`CanvasView`] and is sent once when a
+/// client connects (or after a server-side reset). `Delta` carries a
+/// sparse [`CanvasDeltaView`] computed against that client's last-known
+/// vector clock.
+#[derive(Serialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+enum WsMessage {
+    Snapshot(CanvasView),
+    Delta(CanvasDeltaView),
+}
 
 #[derive(Deserialize)]
 pub struct PaintRequest {
@@ -113,10 +127,14 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState
     let user_id = Uuid::new_v4();
     state.add_user(user_id);
 
-    {
+    // Send an initial full snapshot and remember the version it covers.
+    // Subsequent pushes are deltas computed against this watermark.
+    let mut last_seen = {
         let snapshot = state.snapshot();
-        let Ok(msg) = serde_json::to_string(&CanvasView::from(&snapshot)) else {
-            tracing::error!("failed to serialize canvas state");
+        let version = snapshot.version();
+        let envelope = WsMessage::Snapshot(CanvasView::from(&snapshot));
+        let Ok(msg) = serde_json::to_string(&envelope) else {
+            tracing::error!("failed to serialize canvas snapshot");
             state.remove_user(&user_id);
             return;
         };
@@ -128,7 +146,8 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState
             state.remove_user(&user_id);
             return;
         }
-    }
+        version
+    };
 
     let mut rx = state.subscribe();
     loop {
@@ -136,8 +155,14 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState
             break;
         }
         let snapshot = rx.borrow_and_update().clone();
-        let Ok(msg) = serde_json::to_string(&CanvasView::from(&snapshot)) else {
-            tracing::error!("failed to serialize canvas state");
+        let delta = snapshot.delta_since(&last_seen);
+        if crate::canvas::CanvasDocument::is_empty_delta(&delta) {
+            continue;
+        }
+        let view = CanvasDeltaView::project(&delta, &snapshot);
+        let envelope = WsMessage::Delta(view);
+        let Ok(msg) = serde_json::to_string(&envelope) else {
+            tracing::error!("failed to serialize canvas delta");
             break;
         };
         if socket
@@ -147,6 +172,7 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState
         {
             break;
         }
+        last_seen = snapshot.version();
     }
 
     state.remove_user(&user_id);
