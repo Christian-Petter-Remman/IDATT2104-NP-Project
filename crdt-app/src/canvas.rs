@@ -1,10 +1,11 @@
+use crdt_core::clocks::VectorClock;
 use crdt_core::counters::GCounter;
 use crdt_core::registers::lww_register::LWWRegister;
 use crdt_core::sets::ORSet;
 use crdt_core::traits::{Crdt, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub type Rgba = (u8, u8, u8, u8);
@@ -42,8 +43,16 @@ mod pixel_map_serde {
     }
 }
 
-/// Composite CRDT — the shared state gossiped between nodes.
-#[derive(Clone, Serialize, Deserialize)]
+/// The shared state gossiped between peers.
+///
+/// Every field is a CRDT with its own merge semantics:
+/// - `pixels`: per-coordinate [`LWWRegister`], last writer wins.
+/// - `users`: [`ORSet`] of active peer UUIDs, add-wins on concurrent add/remove.
+/// - `cursors`: per-user [`LWWRegister`] of cursor position, last writer wins.
+/// - `palette`: [`ORSet`] of active palette colors, add-wins.
+/// - `paint_counts`: [`GCounter`] tracking total paints per node.
+/// - `clock`: [`VectorClock`] tracking causality across all of the above.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CanvasDocument {
     #[serde(with = "pixel_map_serde")]
     pub pixels: HashMap<PixelCoord, LWWRegister<Rgba>>,
@@ -51,6 +60,7 @@ pub struct CanvasDocument {
     pub cursors: HashMap<Uuid, LWWRegister<PixelCoord>>,
     pub palette: ORSet<Rgba>,
     pub paint_counts: GCounter,
+    clock: VectorClock,
 }
 
 impl Default for CanvasDocument {
@@ -61,6 +71,7 @@ impl Default for CanvasDocument {
             cursors: HashMap::new(),
             palette: ORSet::new(),
             paint_counts: GCounter::new(),
+            clock: VectorClock::new(),
         }
     }
 }
@@ -70,32 +81,37 @@ impl CanvasDocument {
         Self::default()
     }
 
-    pub fn paint(&mut self, x: u8, y: u8, color: Rgba, node_id: NodeId, timestamp: u64) {
+    /// Set a pixel's color.
+    ///
+    /// Increments the document clock and uses the resulting timestamp
+    /// for the LWW register, ensuring this write beats any previously
+    /// observed state.
+    pub fn paint(&mut self, x: u8, y: u8, color: Rgba, node_id: NodeId) {
+        let ts = self.clock.increment(node_id);
         self.pixels
             .entry((x, y))
             .or_insert_with(|| LWWRegister::new(DEFAULT_PIXEL, 0, node_id))
-            .set(color, timestamp, node_id);
+            .set(color, ts, node_id);
         self.paint_counts.increment(node_id);
     }
 
+    // TODO: why increment clock? And should only increment by one or max?
+    // and return a bool, and for other methods as well?
+
+    /// Register a peer as active. Uses ORSet add-wins semantics.
     pub fn add_user(&mut self, user: Uuid, node_id: &NodeId) {
+        self.clock.increment(*node_id);
         self.users.insert(user, node_id);
     }
 
+    /// Remove a peer from the active set.
     pub fn remove_user(&mut self, user: &Uuid) -> bool {
         self.users.remove(user)
     }
 
-    pub fn active_users(&self) -> std::collections::HashSet<Uuid> {
+    /// Returns the set of currently active peer UUIDs.
+    pub fn active_users(&self) -> HashSet<Uuid> {
         self.users.value()
-    }
-
-    pub fn max_pixel_timestamp(&self) -> u64 {
-        self.pixels
-            .values()
-            .map(|r| r.timestamp())
-            .max()
-            .unwrap_or(0)
     }
 
     pub fn add_palette_color(&mut self, color: Rgba, node_id: &NodeId) {
@@ -121,6 +137,15 @@ impl CanvasDocument {
         result.sort_by_key(|b| std::cmp::Reverse(b.1));
         result
     }
+
+    /// Update a peer's cursor position.
+    pub fn update_cursor(&mut self, user: Uuid, x: u8, y: u8, node_id: NodeId) {
+        let ts = self.clock.increment(node_id);
+        self.cursors
+            .entry(user)
+            .or_insert_with(|| LWWRegister::new((0, 0), 0, node_id))
+            .set((x, y), ts, node_id);
+    }
 }
 
 impl Crdt for CanvasDocument {
@@ -131,6 +156,8 @@ impl Crdt for CanvasDocument {
     }
 
     fn merge(&mut self, other: Self) {
+        self.clock.merge(other.clock);
+
         for ((x, y), reg) in other.pixels {
             match self.pixels.entry((x, y)) {
                 Entry::Occupied(mut e) => e.get_mut().merge(reg),
@@ -139,7 +166,9 @@ impl Crdt for CanvasDocument {
                 }
             }
         }
+
         self.users.merge(other.users);
+
         for (uid, reg) in other.cursors {
             match self.cursors.entry(uid) {
                 Entry::Occupied(mut e) => e.get_mut().merge(reg),
@@ -148,25 +177,28 @@ impl Crdt for CanvasDocument {
                 }
             }
         }
+
         self.palette.merge(other.palette);
         self.paint_counts.merge(other.paint_counts);
     }
 
     fn compare(&self, other: &Self) -> bool {
-        self.pixels
-            .iter()
-            .all(|(k, r)| other.pixels.get(k).is_some_and(|o| r.compare(o)))
+        self.clock.compare(&other.clock)
+            && self
+                .pixels
+                .iter()
+                .all(|(k, r)| other.pixels.get(k).is_some_and(|o| r.compare(o)))
+            && self.users.compare(&other.users)
             && self
                 .cursors
                 .iter()
                 .all(|(k, r)| other.cursors.get(k).is_some_and(|o| r.compare(o)))
-            && self.users.compare(&other.users)
             && self.palette.compare(&other.palette)
             && self.paint_counts.compare(&other.paint_counts)
     }
 }
 
-/// Client-facing view — strips CRDT metadata (timestamps, node ids).
+/// Client-facing view. Strips CRDT metadata (timestamps, node ids, vector clock).
 #[derive(Serialize)]
 pub struct CanvasView {
     pub pixels: HashMap<String, [u8; 4]>,
@@ -233,7 +265,7 @@ mod tests {
     #[test]
     fn paint_and_get() {
         let mut d = CanvasDocument::new();
-        d.paint(1, 2, (255, 0, 0, 255), node(1), 1);
+        d.paint(1, 2, (255, 0, 0, 255), node(1));
         assert_eq!(get_pixel(&d, 1, 2), (255, 0, 0, 255));
     }
 
@@ -246,18 +278,43 @@ mod tests {
     fn lww_higher_ts_wins() {
         let mut a = CanvasDocument::new();
         let mut b = CanvasDocument::new();
-        a.paint(0, 0, (255, 0, 0, 255), node(1), 10);
-        b.paint(0, 0, (0, 0, 255, 255), node(2), 5);
+        // a paints twice (ts=2), b paints once (ts=1)
+        a.paint(0, 0, (255, 0, 0, 255), node(1));
+        a.paint(0, 0, (255, 0, 0, 255), node(1));
+        b.paint(0, 0, (0, 0, 255, 255), node(2));
         a.merge(b);
         assert_eq!(get_pixel(&a, 0, 0), (255, 0, 0, 255));
+    }
+
+    /// The critical test for VectorClock + LWW interaction.
+    ///
+    /// B paints many times, A merges B's state, then A paints once.
+    /// A's single paint happened *after* observing B, so it must win.
+    /// This fails if `increment` uses naive `+= 1` instead of the
+    /// Lamport rule (`max(own, max_all) + 1`).
+    #[test]
+    fn paint_after_merge_beats_higher_remote_count() {
+        let mut a = CanvasDocument::new();
+        let mut b = CanvasDocument::new();
+
+        for _ in 0..5 {
+            b.paint(0, 0, (255, 0, 0, 255), node(2));
+        }
+
+        a.merge(b);
+        a.paint(0, 0, (0, 0, 255, 255), node(1));
+
+        assert_eq!(get_pixel(&a, 0, 0), (0, 0, 255, 255));
     }
 
     #[test]
     fn merge_commutative() {
         let mut a = CanvasDocument::new();
         let mut b = CanvasDocument::new();
-        a.paint(0, 0, (255, 0, 0, 255), node(1), 10);
-        b.paint(0, 0, (0, 0, 255, 255), node(2), 5);
+        a.paint(0, 0, (255, 0, 0, 255), node(1));
+        a.paint(0, 0, (255, 0, 0, 255), node(1));
+        b.paint(0, 0, (0, 0, 255, 255), node(2));
+
         let mut a1 = a.clone();
         a1.merge(b.clone());
         let mut b1 = b.clone();
@@ -269,7 +326,7 @@ mod tests {
     fn merge_idempotent() {
         let user = Uuid::from_u128(7);
         let mut a = CanvasDocument::new();
-        a.paint(0, 0, (1, 2, 3, 4), node(1), 5);
+        a.paint(0, 0, (1, 2, 3, 4), node(1));
         a.add_user(user, &node(1));
         let b = a.clone();
         a.merge(b);
@@ -310,8 +367,8 @@ mod tests {
     #[test]
     fn paint_increments_paint_total() {
         let mut d = CanvasDocument::new();
-        d.paint(0, 0, (1, 2, 3, 4), node(1), 1);
-        d.paint(1, 1, (5, 6, 7, 8), node(1), 2);
+        d.paint(0, 0, (1, 2, 3, 4), node(1));
+        d.paint(1, 1, (5, 6, 7, 8), node(1));
         assert_eq!(d.paint_counts.value(), 2);
     }
 }

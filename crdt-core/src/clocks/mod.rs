@@ -36,9 +36,16 @@ impl VectorClock {
         Self::default()
     }
 
-    /// Advances `node`'s component by one, recording a new local event.
-    pub fn increment(&mut self, node: NodeId) {
-        *self.clock.entry(node).or_insert(0) += 1;
+    /// Advances `node`'s counter past all observed values and returns it.
+    /// 
+    /// This is the Lamport clock rule applied to the vector clock.
+    /// The returned timestamp is strictly greater than any component
+    /// in the clock, making it safe to use as an LWW timestamp.
+    pub fn increment(&mut self, node: NodeId) -> u64 {
+        let max = self.lamport_timestamp();
+        let entry = self.clock.entry(node).or_insert(0);
+        *entry = (*entry).max(max) + 1;
+        *entry
     }
 
     /// Returns the current component for `node`, or `0` if unseen.
@@ -133,10 +140,10 @@ mod tests {
         a.increment(n(1));
         a.increment(n(1)); // n1=2
         b.increment(n(1)); // n1=1
-        b.increment(n(2)); // n2=1
+        b.increment(n(2)); // sees max=1 from n(1), so n2=2 (Lamport rule)
         a.merge(b);
         assert_eq!(a.get(&n(1)), 2);
-        assert_eq!(a.get(&n(2)), 1);
+        assert_eq!(a.get(&n(2)), 2);
     }
 
     #[test]
@@ -181,9 +188,9 @@ mod tests {
     fn lamport_timestamp_is_max_component() {
         let mut vc = VectorClock::new();
         vc.increment(n(1));
-        vc.increment(n(1)); // 2
-        vc.increment(n(2)); // 1
-        assert_eq!(vc.lamport_timestamp(), 2);
+        vc.increment(n(1)); // n1=2
+        vc.increment(n(2)); // sees max=2, so n2=3
+        assert_eq!(vc.lamport_timestamp(), 3);
     }
 
     #[test]
