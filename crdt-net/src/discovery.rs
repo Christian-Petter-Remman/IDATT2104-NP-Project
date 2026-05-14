@@ -108,7 +108,17 @@ fn parse_peer(self_id: Uuid, info: &ServiceInfo) -> Option<(Uuid, SocketAddr)> {
         return None;
     }
     let port = info.get_port();
-    let ip = info.get_addresses().iter().copied().next()?;
+    // `get_addresses()` returns a `HashSet<IpAddr>`. Iteration order is
+    // unspecified, so we explicitly prefer IPv4: if a service announces
+    // both, picking randomly between v4 and v6 would make peer addresses
+    // non-deterministic across runs. Fall back to whatever the set has if
+    // it's v6-only.
+    let addresses = info.get_addresses();
+    let ip = addresses
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| addresses.iter().next())
+        .copied()?;
     Some((id, SocketAddr::new(ip, port)))
 }
 

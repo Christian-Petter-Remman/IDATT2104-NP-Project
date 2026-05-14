@@ -8,38 +8,17 @@
 //!  - K consecutive failed sends evicts an unreachable bootstrap.
 //!  - Tombstones propagate transitively via the `departed` field of Sync.
 
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use crdt_core::Crdt;
 use crdt_net::{GossipConfig, GossipEngine};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct Tiny {
-    counts: BTreeMap<Uuid, u64>,
-}
-
-impl Crdt for Tiny {
-    type Value = u64;
-    fn value(&self) -> u64 {
-        self.counts.values().sum()
-    }
-    fn merge(&self, other: &Self) -> Self {
-        let mut out = self.counts.clone();
-        for (k, v) in &other.counts {
-            let slot = out.entry(*k).or_default();
-            if *v > *slot {
-                *slot = *v;
-            }
-        }
-        Self { counts: out }
-    }
-}
+mod common;
+use common::MockCrdt;
 
 struct Node {
     id: Uuid,
@@ -53,7 +32,7 @@ impl Node {
 
     async fn start_with_bootstraps(interval: Duration, bootstraps: Vec<SocketAddr>) -> Self {
         let id = Uuid::new_v4();
-        let (state_tx, state_rx) = watch::channel(Tiny::default());
+        let (state_tx, state_rx) = watch::channel(MockCrdt::default());
         let (merged_tx, _merged_rx) = broadcast::channel(32);
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let config = GossipConfig::new(id, addr)
@@ -179,8 +158,14 @@ async fn tombstoned_peer_is_not_revived_by_peer_list_gossip() {
 #[tokio::test]
 async fn consecutive_failures_evict_unreachable_bootstrap() {
     let interval = Duration::from_millis(30);
-    // Bootstrap A to a port nothing is listening on.
-    let dead: SocketAddr = "127.0.0.1:1".parse().unwrap();
+    // Pick a port the kernel has reserved for nobody by binding then
+    // immediately releasing it. Using a fixed low port like 127.0.0.1:1
+    // is unreliable across platforms (Linux RSTs instantly, Windows may
+    // filter, macOS may RST after a small delay, and on some systems
+    // 127.0.0.1:1 is privileged).
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead: SocketAddr = probe.local_addr().unwrap();
+    drop(probe);
     let a = Node::start_with_bootstraps(interval, vec![dead]).await;
 
     // Wait long enough for FAILURE_THRESHOLD (10) ticks of failed sends to

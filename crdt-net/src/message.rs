@@ -5,7 +5,14 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
-pub const MAX_FRAME: usize = 16 * 1024 * 1024;
+/// Maximum allowed frame size on the wire.
+///
+/// Sized for ~4× the worst-case `CanvasDocument` payload (full 64×64 LWW
+/// pixel map + palette + active_peers + cursors, JSON-encoded, settles
+/// well under 1 MiB). Keeping this tight reduces the worst-case
+/// allocation a malicious peer can drive: `read_frame` allocates up to
+/// `MAX_FRAME` bytes per inbound connection.
+pub const MAX_FRAME: usize = 4 * 1024 * 1024;
 
 /// A peer's identity and reachable address.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -5,38 +5,17 @@
 //! so these tests exercise only the peer-list-in-Sync mechanism: a node
 //! that knows peer B should learn about C from B's gossip.
 
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use crdt_core::Crdt;
 use crdt_net::{GossipConfig, GossipEngine};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct Tiny {
-    counts: BTreeMap<Uuid, u64>,
-}
-
-impl Crdt for Tiny {
-    type Value = u64;
-    fn value(&self) -> u64 {
-        self.counts.values().sum()
-    }
-    fn merge(&self, other: &Self) -> Self {
-        let mut out = self.counts.clone();
-        for (k, v) in &other.counts {
-            let slot = out.entry(*k).or_default();
-            if *v > *slot {
-                *slot = *v;
-            }
-        }
-        Self { counts: out }
-    }
-}
+mod common;
+use common::MockCrdt;
 
 struct Node {
     id: Uuid,
@@ -46,7 +25,7 @@ struct Node {
 impl Node {
     async fn start(interval: Duration) -> Self {
         let id = Uuid::new_v4();
-        let (state_tx, state_rx) = watch::channel(Tiny::default());
+        let (state_tx, state_rx) = watch::channel(MockCrdt::default());
         let (merged_tx, _merged_rx) = broadcast::channel(32);
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let config = GossipConfig::new(id, addr)
@@ -125,7 +104,7 @@ async fn bootstrap_gets_uuid_after_first_contact() {
 
     // B is given A's address as a bootstrap (no UUID known yet).
     let b_id = Uuid::new_v4();
-    let (state_tx, state_rx) = watch::channel(Tiny::default());
+    let (state_tx, state_rx) = watch::channel(MockCrdt::default());
     let (merged_tx, _merged_rx) = broadcast::channel(32);
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let config = GossipConfig::new(b_id, addr)

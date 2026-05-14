@@ -8,7 +8,7 @@ use crdt_core::Crdt;
 use rand::seq::IteratorRandom;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Notify, broadcast, watch};
+use tokio::sync::{Notify, Semaphore, broadcast, watch};
 use tokio::time;
 use tracing::{debug, trace, warn};
 use uuid::Uuid;
@@ -18,6 +18,10 @@ use crate::discovery;
 use crate::message::{GossipMessage, PeerEntry, read_frame, write_frame};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Per-connection deadline for reading the first (and only) frame. A peer
+/// that opens TCP and sends only a partial header would otherwise hold
+/// the handler task open indefinitely.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const FANOUT: usize = 2;
 const KNOWN_PEERS_CAP: usize = 64;
 /// Number of consecutive failed sends to a peer address before we evict it.
@@ -26,6 +30,9 @@ const FAILURE_THRESHOLD: u32 = 10;
 /// Maximum number of peers we attempt to notify during graceful shutdown.
 const GOODBYE_FANOUT: usize = 4;
 const GOODBYE_TIMEOUT: Duration = Duration::from_millis(500);
+/// Cap on simultaneous in-flight inbound connections. Excess connections
+/// are dropped immediately rather than allowed to pile up handler tasks.
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
 
 /// Tracks the set of peers known to this engine.
 ///
@@ -44,6 +51,16 @@ const GOODBYE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Each successful send to an address resets it to zero; each failure
 /// increments. When it hits `FAILURE_THRESHOLD` the corresponding UUID (if
 /// any) is tombstoned; an unresolved bootstrap is just dropped.
+///
+/// # Lock discipline
+///
+/// All four mutexes are leaf locks. **No method holds more than one of
+/// them simultaneously across an `await` point or a nested method call.**
+/// Where two need to be touched in one operation (e.g. `tombstone` removes
+/// from `resolved` and clears the matching `failure_counts` entry), each
+/// critical section is short and the locks are released between them.
+/// This avoids deadlock concerns regardless of which order future callers
+/// touch them in.
 pub(crate) struct PeerRegistry {
     self_id: Uuid,
     self_addr: SocketAddr,
@@ -108,25 +125,51 @@ impl PeerRegistry {
     }
 
     /// Absorb a batch of tombstones learned via gossip.
+    ///
+    /// Follows the registry's "one lock at a time" discipline: insert into
+    /// `tombstones` in one critical section, then update `resolved` and
+    /// `failure_counts` in subsequent ones. Self-tombstones in `incoming`
+    /// are ignored.
     pub(crate) fn absorb_tombstones(&self, incoming: &[Uuid]) {
-        let mut ts = self.tombstones.lock().unwrap();
-        for id in incoming {
-            if *id == self.self_id {
-                continue; // never tombstone ourselves
-            }
-            ts.insert(*id);
+        if incoming.is_empty() {
+            return;
         }
-        // Drop any resolved entries whose UUID is now tombstoned.
-        let mut resolved = self.resolved.lock().unwrap();
-        let mut failures = self.failure_counts.lock().unwrap();
-        resolved.retain(|id, addr| {
-            if ts.contains(id) {
-                failures.remove(addr);
-                false
-            } else {
-                true
+        // 1. Record the tombstones we don't already have, filtering out self.
+        let newly_added: Vec<Uuid> = {
+            let mut ts = self.tombstones.lock().unwrap();
+            incoming
+                .iter()
+                .filter(|id| **id != self.self_id && ts.insert(**id))
+                .copied()
+                .collect()
+        };
+        // We also need to drop any *previously* tombstoned id that somehow
+        // got re-added; fold the full incoming list (minus self) into the
+        // eviction sweep below so we're idempotent and self-healing.
+        let to_evict: Vec<Uuid> = if newly_added.len() == incoming.len() {
+            newly_added
+        } else {
+            incoming
+                .iter()
+                .filter(|id| **id != self.self_id)
+                .copied()
+                .collect()
+        };
+        // 2. Drop those UUIDs from `resolved`, collecting their addresses.
+        let removed_addrs: Vec<SocketAddr> = {
+            let mut resolved = self.resolved.lock().unwrap();
+            to_evict
+                .iter()
+                .filter_map(|id| resolved.remove(id))
+                .collect()
+        };
+        // 3. Clear failure counts for removed addresses.
+        if !removed_addrs.is_empty() {
+            let mut failures = self.failure_counts.lock().unwrap();
+            for addr in removed_addrs {
+                failures.remove(&addr);
             }
-        });
+        }
     }
 
     /// Record a successful send. Resets the failure counter for this
@@ -191,15 +234,6 @@ impl PeerRegistry {
         let departed: Vec<Uuid> = tombstones.iter().copied().collect();
 
         (targets, known, departed)
-    }
-
-    /// Snapshot used by graceful shutdown — just the addresses we should
-    /// notify, plus the same `known_peers` and `departed` payload.
-    fn farewell_snapshot(&self) -> (Vec<SocketAddr>, Vec<PeerEntry>, Vec<Uuid>) {
-        // Identical to gossip_snapshot today, but factored separately so
-        // we can tune it independently (e.g., prefer resolved over
-        // bootstraps for the goodbye).
-        self.gossip_snapshot()
     }
 
     pub(crate) fn known_peers(&self) -> Vec<PeerEntry> {
@@ -356,7 +390,7 @@ impl GossipEngine {
     /// [`GOODBYE_TIMEOUT`] connect/write deadline. Then triggers the
     /// engine's tasks to exit.
     pub async fn graceful_shutdown(&self) {
-        let (targets, known_peers, mut departed) = self.registry.farewell_snapshot();
+        let (targets, known_peers, mut departed) = self.registry.gossip_snapshot();
         // Include ourselves in the goodbye's departed set.
         if !departed.contains(&self.self_id) {
             departed.push(self.self_id);
@@ -404,6 +438,7 @@ fn spawn_listener<T>(
 ) where
     T: Crdt + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -414,11 +449,23 @@ fn spawn_listener<T>(
                 accept = listener.accept() => {
                     match accept {
                         Ok((stream, peer)) => {
+                            // Bound the number of concurrently-handled
+                            // connections. Dropping over-cap connections
+                            // immediately is correct gossip behaviour —
+                            // the sender will retry next tick.
+                            let Ok(permit) = Arc::clone(&semaphore).try_acquire_owned() else {
+                                warn!(%peer, "dropping connection: at MAX_CONCURRENT_CONNECTIONS ({})", MAX_CONCURRENT_CONNECTIONS);
+                                drop(stream);
+                                continue;
+                            };
                             debug!(%peer, "accepted gossip connection");
                             let local = local.clone();
                             let merged = merged.clone();
                             let registry = registry.clone();
-                            tokio::spawn(handle_connection::<T>(stream, peer, local, merged, registry));
+                            tokio::spawn(async move {
+                                let _permit = permit; // released on drop
+                                handle_connection::<T>(stream, peer, local, merged, registry).await;
+                            });
                         }
                         Err(e) => {
                             warn!(error = %e, "accept failed");
@@ -439,13 +486,20 @@ async fn handle_connection<T>(
 ) where
     T: Crdt + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    match read_frame::<_, T>(&mut stream).await {
-        Ok(GossipMessage::Sync {
+    // Cap how long a single connection can keep this task alive. A peer
+    // that opens TCP and never sends data (or only sends a partial header)
+    // would otherwise hold a handler task indefinitely.
+    let read = time::timeout(READ_TIMEOUT, read_frame::<_, T>(&mut stream)).await;
+    match read {
+        Err(_) => {
+            trace!(%peer, "connection idle past READ_TIMEOUT, dropping");
+        }
+        Ok(Ok(GossipMessage::Sync {
             from,
             state,
             known_peers,
             departed,
-        }) => {
+        })) => {
             debug!(%peer, sender = %from.node_id, "received Sync, merging");
             // Absorb tombstones FIRST so a freshly-tombstoned UUID in
             // `known_peers` can't be re-added by the same message.
@@ -457,18 +511,18 @@ async fn handle_connection<T>(
             let merged_value = local.borrow().merge(&state);
             let _ = merged.send(merged_value);
         }
-        Ok(GossipMessage::Goodbye {
+        Ok(Ok(GossipMessage::Goodbye {
             from,
             departed,
             known_peers,
-        }) => {
+        })) => {
             debug!(%peer, sender = %from.node_id, "received Goodbye");
             registry.absorb_tombstones(&departed);
             for entry in known_peers {
                 registry.add_resolved(entry.node_id, entry.addr);
             }
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             trace!(error = %e, %peer, "discarding malformed frame");
         }
     }

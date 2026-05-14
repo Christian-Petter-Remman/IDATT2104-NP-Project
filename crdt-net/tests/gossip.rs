@@ -1,48 +1,16 @@
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use crdt_core::Crdt;
 use crdt_net::{GossipConfig, GossipEngine};
-use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, watch};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-/// Element-wise max counter map. Trivially commutative/associative/idempotent.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct MockCrdt {
-    counts: BTreeMap<Uuid, u64>,
-}
-
-impl MockCrdt {
-    fn bump(&mut self, who: Uuid) {
-        *self.counts.entry(who).or_default() += 1;
-    }
-
-    fn total(&self) -> u64 {
-        self.counts.values().sum()
-    }
-}
-
-impl Crdt for MockCrdt {
-    type Value = u64;
-    fn value(&self) -> u64 {
-        self.total()
-    }
-    fn merge(&self, other: &Self) -> Self {
-        let mut out = self.counts.clone();
-        for (k, v) in &other.counts {
-            let slot = out.entry(*k).or_default();
-            if *v > *slot {
-                *slot = *v;
-            }
-        }
-        Self { counts: out }
-    }
-}
+mod common;
+use common::MockCrdt;
 
 struct Node {
     id: Uuid,

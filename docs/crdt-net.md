@@ -232,14 +232,16 @@ The biggest source file. It is structured as:
 - A private helper **`resolve_advertise_addr`** that turns the
   potentially-wildcard `gossip_addr` into a concrete address peers can dial.
 
-**The peer registry** keeps two collections:
+**The peer registry** keeps four collections:
 
 ```rust
 struct PeerRegistry {
     self_id: Uuid,
     self_addr: SocketAddr,
-    resolved: Mutex<HashMap<Uuid, SocketAddr>>, // peers whose UUID we know
-    bootstraps: Mutex<HashSet<SocketAddr>>,     // peers we've been told to try but haven't talked to yet
+    resolved: Mutex<HashMap<Uuid, SocketAddr>>,  // peers whose UUID we know
+    bootstraps: Mutex<HashSet<SocketAddr>>,      // addresses we've been told to try
+    tombstones: Mutex<HashSet<Uuid>>,            // 2P-Set: UUIDs that have departed
+    failure_counts: Mutex<HashMap<SocketAddr, u32>>, // per-address send-failure counter
 }
 ```
 
@@ -249,6 +251,23 @@ both add to `bootstraps`. The ticker tries these along with `resolved`
 addresses every tick. The first time one of them responds (via incoming
 `Sync` with a `from` field), we learn its UUID and migrate it into
 `resolved`. From then on it's a normal peer.
+
+`tombstones` enforces 2P-Set semantics: once a UUID is tombstoned, it can
+never be re-added to `resolved`. This blocks peer-list gossip from
+reviving a peer that another node has already marked as departed. See §7
+for the full lifecycle.
+
+`failure_counts` powers the K-consecutive-failure eviction heuristic. Each
+successful send to an address resets it to zero; each failure increments.
+When it hits `FAILURE_THRESHOLD` (10), the corresponding UUID is
+tombstoned (or, if the address is still an unresolved bootstrap, dropped
+silently).
+
+**Lock discipline.** All four mutexes are leaf locks. No method holds
+more than one of them across an `await` or a nested method call. Critical
+sections are short and the locks are released between them. This avoids
+the kind of lock-ordering deadlock you can get when one method takes
+`A → B` and another takes `B → A`.
 
 **`GossipEngine` fields**:
 
@@ -352,13 +371,42 @@ endpoint in `crdt-app`.
 
 ### `GossipEngine::remove_peer(node_id)`
 
-Removes a peer from the resolved map by UUID. Use `known_peers()` to find
-the UUID first.
+Removes a peer from the resolved map by UUID **without** tombstoning it.
+The peer can come back via mDNS, bootstrap, or peer-list gossip. Use this
+for "I don't want to keep retrying this address right now"; use
+`tombstone_peer` for "this peer is gone for good."
+
+### `GossipEngine::tombstone_peer(node_id)`
+
+Tombstones a peer by UUID. The UUID moves from `resolved` to `tombstones`
+and cannot be re-added by any means (mDNS, bootstrap, peer-list gossip).
+The tombstone propagates to the rest of the mesh via the next gossip
+tick's `departed` field. See §7 for when each peer eventually learns it.
 
 ### `GossipEngine::known_peers() -> Vec<PeerEntry>`
 
 Snapshot of currently-resolved peers. Used by the demo's `peers` command
 and (in the future) by `crdt-app`'s `GET /api/peers` HTTP endpoint.
+
+### `GossipEngine::known_tombstones() -> Vec<Uuid>`
+
+Snapshot of currently-tombstoned UUIDs. Useful for diagnostics (the
+demo's `tombstones` command prints it) and for verifying mesh convergence
+in tests.
+
+### `GossipEngine::graceful_shutdown().await`
+
+Sends a `Goodbye` message with this node's UUID in `departed` to up to
+`GOODBYE_FANOUT` (4) random peers, each with a `GOODBYE_TIMEOUT` (500ms)
+write deadline. Then triggers the engine's tasks to exit. Calling this
+before dropping the engine lets the rest of the mesh learn of the
+departure immediately, instead of having to wait for the K-failure
+heuristic to fire.
+
+`Drop` only calls `shutdown.notify_waiters()` — it does **not** try to
+send a Goodbye, because doing async work in a sync `Drop` is fragile.
+Callers who want a clean exit must `await graceful_shutdown()` before the
+engine falls out of scope.
 
 ### `GossipEngine::shutdown`
 
@@ -387,7 +435,10 @@ enabled). All are spawned from `run` and live until `shutdown` fires.
 loop {
     select {
         shutdown.notified() => return
-        listener.accept()    => spawn(handle_connection(stream, ...))
+        listener.accept() => {
+            let permit = semaphore.try_acquire_owned()?;  // drop if at cap
+            spawn(handle_connection(stream, ..., permit))
+        }
     }
 }
 ```
@@ -397,16 +448,28 @@ short-lived task running `handle_connection`. The accept loop never blocks
 on a slow peer — the slow peer just keeps its own dedicated handler task
 busy.
 
-If `accept()` itself errors (rare — usually a fd-table problem), it logs a
-warning and continues. The listener never dies on its own.
+**Connection cap.** The listener holds a `tokio::sync::Semaphore` with
+`MAX_CONCURRENT_CONNECTIONS = 64` permits. Each accepted connection
+acquires one permit; the spawned handler task holds it until it exits
+(success, timeout, or error). If the cap is hit, the new connection is
+dropped immediately (the kernel sends RST/FIN). This bounds resource use
+under a connection flood — an adversary can't pile up unbounded handler
+tasks or exhaust the process's file descriptors.
+
+If `accept()` itself errors (rare — usually a fd-table problem), it logs
+a warning and continues. The listener never dies on its own.
 
 ### 5.2 `handle_connection`
 
-Per-connection task. Reads exactly one frame, processes it, exits.
+Per-connection task. Reads one frame within a deadline, processes it,
+exits.
 
 ```rust
-match read_frame::<_, T>(&mut stream).await {
-    Ok(GossipMessage::Sync { from, state, known_peers }) => {
+let read = time::timeout(READ_TIMEOUT, read_frame::<_, T>(&mut stream)).await;
+match read {
+    Err(_) => trace!(%peer, "connection idle past READ_TIMEOUT"),
+    Ok(Ok(GossipMessage::Sync { from, state, known_peers, departed })) => {
+        registry.absorb_tombstones(&departed);
         registry.add_resolved(from.node_id, from.addr);
         for entry in known_peers {
             registry.add_resolved(entry.node_id, entry.addr);
@@ -414,28 +477,44 @@ match read_frame::<_, T>(&mut stream).await {
         let merged_value = local.borrow().merge(&state);
         let _ = merged.send(merged_value);
     }
-    Err(e) => {
-        trace!(...);  // malformed: discard silently per spec
+    Ok(Ok(GossipMessage::Goodbye { from, departed, known_peers })) => {
+        registry.absorb_tombstones(&departed);
+        for entry in known_peers {
+            registry.add_resolved(entry.node_id, entry.addr);
+        }
     }
+    Ok(Err(e)) => trace!(error = %e, "discarding malformed frame"),
 }
 ```
 
-The flow:
+The flow on a normal `Sync`:
 
-1. Read one length-prefixed JSON frame. If the prefix is bogus, the body
-   is truncated, the JSON is malformed, or the frame exceeds `MAX_FRAME`,
-   `read_frame` returns an `io::Error`. We drop the frame and let the
-   connection close.
-2. Add the sender (`from`) to the resolved peer map. `add_resolved`
-   silently no-ops if the entry is self.
-3. Add every entry from `known_peers` to the resolved map. This is the
-   peer-list-gossip step: each `Sync` propagates membership information
-   transitively.
-4. Take `local.borrow()` — a read-locked view of the latest watch value.
-5. Call `merge(&state)`. Because `Crdt::merge` produces a new `T`,
-   nothing is mutated in place — `local` still holds the pre-merge value.
-6. `merged.send(merged_value)` publishes the result on the broadcast. If
-   nobody is subscribed yet, `send` returns `Err` and we ignore it.
+1. `time::timeout(READ_TIMEOUT, ...)` caps the handler's lifetime at 5
+   seconds. A peer that opens TCP and never sends data (or sends only a
+   partial 4-byte length header) used to hold this task open
+   indefinitely; with the timeout, the task always exits.
+2. Read one length-prefixed JSON frame. If the prefix is bogus, the body
+   is truncated, the JSON is malformed, or the frame exceeds `MAX_FRAME`
+   (4 MiB), `read_frame` returns an `io::Error`. We drop the frame and
+   let the connection close.
+3. **Absorb tombstones first.** Any UUID in `departed` is added to our
+   tombstone set, and any matching `resolved` entry is dropped. Doing
+   this before processing `known_peers` ensures a freshly-tombstoned
+   UUID in the same message can't be re-added on the next line.
+4. Add the sender (`from`) to the resolved peer map. `add_resolved`
+   silently no-ops if the entry is self or already tombstoned.
+5. Add every entry from `known_peers` to the resolved map — peer-list
+   gossip.
+6. Take `local.borrow()` — a read-locked view of the latest watch
+   value.
+7. Call `merge(&state)`. Because `Crdt::merge` produces a new `T`,
+   nothing is mutated in place — `local` still holds the pre-merge
+   value.
+8. `merged.send(merged_value)` publishes the result on the broadcast.
+   If nobody is subscribed yet, `send` returns `Err` and we ignore it.
+
+`Goodbye` follows the same flow but skips state merging (the variant has
+no state). It still propagates `departed` and `known_peers`.
 
 **Why does the engine not write the merged value back to the watch?**
 Because the engine doesn't own the watch `Sender` — the app does. The app
@@ -454,11 +533,21 @@ loop {
         shutdown.notified() => return
         ticker.tick() => {
             let snapshot = local.borrow().clone();
-            let (targets, known_peers) = registry.snapshot();   // resolved + bootstraps
+            let (targets, known_peers, departed) = registry.gossip_snapshot();
             let chosen = targets.choose_multiple(rng, FANOUT);
             let from = PeerEntry { node_id: self_id, addr: advertise_addr };
             for addr in chosen {
-                spawn(send_sync(addr, from.clone(), snapshot.clone(), known_peers.clone()));
+                spawn(async move {
+                    match send_sync(addr, from, snapshot, known_peers, departed).await {
+                        Ok(()) => registry.mark_success(addr),
+                        Err(e) => {
+                            if let Some(id) = registry.mark_failure(addr) {
+                                debug!(%addr, %id, "evicted after repeated failures");
+                            }
+                            warn!(%addr, error = %e, "gossip send failed");
+                        }
+                    }
+                });
             }
         }
     }
@@ -679,6 +768,31 @@ C receives A's Sync:
 Within ~2 gossip intervals, A and C are directly connected. This is the
 basis of how one bootstrap peer is enough to discover the entire mesh.
 
+### 8.5 Tombstone propagation (graceful exit + crash)
+
+```
+A, B, C all peered with each other.
+
+Graceful path (A presses Ctrl-C):
+  A: graceful_shutdown.await
+     ├ Goodbye{from: A, departed: [A], known_peers: [B, C]} → B  (500ms timeout)
+     └ Goodbye{from: A, departed: [A], known_peers: [B, C]} → C  (500ms timeout)
+  B: absorb_tombstones([A]) → drop A from resolved
+  C: absorb_tombstones([A]) → drop A from resolved
+  (next tick) B's Sync to C carries departed: [A] — idempotent reinforcement.
+
+Crash path (A loses power):
+  B: tick → send_sync(A) fails. failure_counts[A_addr] = 1.
+  …repeat for ~10 ticks (≈10s at 1s interval)…
+  B: failure_counts[A_addr] = 10 → tombstone(A) → drop from resolved.
+  (next tick) B's Sync to C carries departed: [A] — C now knows too.
+```
+
+Both paths converge to the same end state: every live peer has A in its
+`tombstones` set, no live peer attempts to gossip to A's address. The
+graceful path is fast (one round trip). The crash path takes the
+`FAILURE_THRESHOLD * interval` window first.
+
 ---
 
 ## 9. Error handling philosophy
@@ -689,44 +803,71 @@ log-and-continue:
 
 | Situation | What happens |
 |---|---|
-| Peer is down / connect refused | `warn!`, skip, retry next tick |
-| Peer connect times out (>2s) | `warn!`, skip, retry next tick |
+| Peer is down / connect refused | `warn!`, skip, retry next tick; mark_failure() increments counter |
+| Peer connect times out (>2s) | same as above |
+| 10 consecutive failures to one address | tombstone the UUID (if resolved) or drop the bootstrap; `debug!` log |
 | Inbound TCP frame is malformed | `trace!`, drop connection |
-| Inbound frame claims length > 16 MiB | `trace!`, drop connection |
+| Inbound frame claims length > 4 MiB | `trace!`, drop connection |
 | Inbound JSON fails to deserialize | `trace!`, drop connection |
+| Inbound TCP connection idle > READ_TIMEOUT (5s) | `trace!`, drop connection |
+| Accept exceeds MAX_CONCURRENT_CONNECTIONS (64) | `warn!`, drop the new connection immediately |
 | Broadcast send fails (no subscribers) | silently ignored |
 | Accept error | `warn!`, continue accept loop |
+| Goodbye send fails / times out | silently ignored (best-effort) |
 
-The spec phrasing for both failure modes ("warn + skip" / "discard
-silently") is implemented literally.
+The spec phrasing for the basic failure modes ("warn + skip" / "discard
+silently") is implemented literally; the additional rows above are
+defensive limits that bound resource use under adversarial or accidental
+abuse.
 
 ---
 
 ## 10. Testing strategy
 
-[crdt-net/tests/gossip.rs](../crdt-net/tests/gossip.rs) contains three
-`#[tokio::test]` functions. They share:
+There are nine integration tests across three files, all built on a
+shared **`MockCrdt`** ([tests/common/mod.rs](../crdt-net/tests/common/mod.rs))
+— a `BTreeMap<Uuid, u64>` with element-wise-max merge that trivially
+satisfies the CRDT laws. Each test file declares `mod common;` at the
+top to pull it in; Cargo doesn't compile the `common` subdirectory as a
+test binary.
 
-- A **`MockCrdt`** — a `BTreeMap<Uuid, u64>` with element-wise-max merge.
-  Trivially satisfies the CRDT laws. Used in lieu of `CanvasDocument`,
-  which isn't built yet.
-- A **`Node`** test fixture that spins up an engine, wires the forwarder,
-  and exposes `bump()` / `addr()` / `current()` helpers.
+[tests/gossip.rs](../crdt-net/tests/gossip.rs) — 3 tests for the basic
+gossip path:
 
-The three tests:
+1. **`converges_across_three_nodes`** — full mesh, each bumps; assert all
+   three converge to the union total within a few intervals.
+2. **`partition_then_heal`** — peer, mutate, converge, un-peer, mutate
+   independently, re-peer, assert convergence.
+3. **`garbage_does_not_kill_listener`** — bogus length prefixes /
+   truncated frames; verify the listener stays up and still processes a
+   valid frame afterwards.
 
-1. **`converges_across_three_nodes`** — three nodes, full mesh, each
-   bumps locally; assert all three converge to the union total within a
-   few gossip intervals. Uses 80ms intervals to keep wall-clock short.
-2. **`partition_then_heal`** — two nodes peer, mutate, converge,
-   un-peer (partition), mutate independently, re-peer, assert
-   convergence.
-3. **`garbage_does_not_kill_listener`** — open raw TCP, send bogus
-   length prefixes / truncated frames / half a length prefix; then open a
-   real peer connection and verify the listener still processes it.
+[tests/discovery.rs](../crdt-net/tests/discovery.rs) — 2 tests for
+peer-list propagation (mDNS itself is skipped — too flaky in CI):
 
-All three pass with `cargo test -p crdt-net`. The convergence test was
-run 10× in a row to verify it isn't flaky.
+1. **`peer_list_propagates_transitively`** — A↔B↔C, A and C learn each
+   other through B's `known_peers` field.
+2. **`bootstrap_gets_uuid_after_first_contact`** — confirms the
+   bootstrap → resolved migration on first successful gossip.
+
+[tests/tombstones.rs](../crdt-net/tests/tombstones.rs) — 4 tests for the
+2P-Set tombstoning path:
+
+1. **`graceful_shutdown_propagates_tombstone`** — A calls
+   `graceful_shutdown`; within a few ticks B and C have A's UUID in
+   `known_tombstones()`.
+2. **`tombstoned_peer_is_not_revived_by_peer_list_gossip`** — A
+   tombstones B; even though C still gossips B's address to A, A's
+   resolved map stays empty for B.
+3. **`consecutive_failures_evict_unreachable_bootstrap`** — bootstrap
+   pointing at a bind-then-released port; engine evicts it after the
+   threshold and still works for real peers added afterwards.
+4. **`tombstone_propagates_transitively_via_known_peers_in_sync`** —
+   A→B→C topology, A tombstones C, B learns via A's `departed`, C
+   correctly refuses to tombstone its own UUID.
+
+All nine pass with `cargo test -p crdt-net`. The convergence and
+tombstone tests were each run 10× in a loop to verify they aren't flaky.
 
 ---
 

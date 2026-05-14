@@ -7,10 +7,14 @@
 //! broadcast channel, and (optionally) auto-discovers peers on the local
 //! network via mDNS.
 
-pub mod config;
+// Internal modules — types are re-exported at the crate root below. Keeping
+// the modules `pub(crate)` prevents external callers from depending on
+// internal items (e.g. `PeerRegistry`, raw codec helpers) via the module
+// path. If a new public surface item is needed, re-export it explicitly.
+pub(crate) mod config;
 pub(crate) mod discovery;
-pub mod engine;
-pub mod message;
+pub(crate) mod engine;
+pub(crate) mod message;
 
 pub use config::GossipConfig;
 pub use engine::GossipEngine;
