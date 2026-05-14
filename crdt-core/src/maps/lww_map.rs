@@ -63,8 +63,8 @@ where
     ///
     /// If the key already exists, the write is forwarded to its
     /// LWWRegister, which only accepts it if the timestamp is
-    /// higher (or equal with a higher node_id). Stale writes
-    /// are silently ignored.
+    /// higher (or equal with a higher node_id). Will return `false`
+    /// the timestap is lower, and the write is rejected.
     ///
     /// If the key is new, a fresh LWWRegister is created.
     pub fn set(&mut self, key: K, value: V, timestamp: u64, node_id: NodeId) -> bool {
@@ -122,5 +122,153 @@ where
                 None => { self.entries.insert(key, other_reg); }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::Crdt;
+    use uuid::Uuid;
+
+    fn node(n: u128) -> NodeId {
+        Uuid::from_u128(n)
+    }
+
+    #[test]
+    fn set_and_get() {
+        let mut map = LWWMap::new();
+        map.set("x", 5, 1, node(1));
+        assert_eq!(map.get(&"x"), Some(5));
+    }
+
+    #[test]
+    fn get_missing_key_returns_none() {
+        let map: LWWMap<&str, u32> = LWWMap::new();
+        assert_eq!(map.get(&"x"), None);
+    }
+
+    #[test]
+    fn set_higher_timestamp_overwrites() {
+        let mut map = LWWMap::new();
+        map.set("x", 5, 1, node(1));
+        assert!(map.set("x", 9, 3, node(1)));
+        assert_eq!(map.get(&"x"), Some(9));
+    }
+
+    #[test]
+    fn set_lower_timestamp_rejected() {
+        let mut map = LWWMap::new();
+        map.set("x", 5, 3, node(1));
+        assert!(!map.set("x", 9, 1, node(1)));
+        assert_eq!(map.get(&"x"), Some(5));
+    }
+
+    #[test]
+    fn set_equal_timestamp_higher_node_wins() {
+        let mut map = LWWMap::new();
+        map.set("x", 5, 1, node(1));
+        assert!(map.set("x", 9, 1, node(2)));
+        assert_eq!(map.get(&"x"), Some(9));
+    }
+
+    #[test]
+    fn contains_key() {
+        let mut map = LWWMap::new();
+        assert!(!map.contains_key(&"x"));
+        map.set("x", 5, 1, node(1));
+        assert!(map.contains_key(&"x"));
+    }
+
+    #[test]
+    fn value_returns_all_resolved() {
+        let mut map = LWWMap::new();
+        map.set("x", 5, 1, node(1));
+        map.set("y", 9, 1, node(1));
+        let snapshot = map.value();
+        assert_eq!(snapshot.get(&"x"), Some(&5));
+        assert_eq!(snapshot.get(&"y"), Some(&9));
+    }
+
+    #[test]
+    fn merge_different_keys() {
+        let mut a = LWWMap::new();
+        a.set("x", 5, 1, node(1));
+        let mut b = LWWMap::new();
+        b.set("y", 9, 1, node(2));
+
+        a.merge(b);
+        assert_eq!(a.get(&"x"), Some(5));
+        assert_eq!(a.get(&"y"), Some(9));
+    }
+
+    #[test]
+    fn merge_same_key_higher_timestamp_wins() {
+        let mut a = LWWMap::new();
+        a.set("x", 5, 3, node(1));
+        let mut b = LWWMap::new();
+        b.set("x", 9, 7, node(2));
+
+        a.merge(b);
+        assert_eq!(a.get(&"x"), Some(9));
+    }
+
+    #[test]
+    fn merge_commutativity() {
+        let mut a = LWWMap::new();
+        a.set("x", 5, 3, node(1));
+        a.set("y", 2, 1, node(1));
+        let mut b = LWWMap::new();
+        b.set("x", 9, 7, node(2));
+        b.set("z", 4, 2, node(2));
+
+        let mut ab = a.clone();
+        ab.merge(b.clone());
+        let mut ba = b.clone();
+        ba.merge(a.clone());
+
+        assert_eq!(ab.value(), ba.value());
+    }
+
+    #[test]
+    fn merge_idempotency() {
+        let mut a = LWWMap::new();
+        a.set("x", 5, 1, node(1));
+        let before = a.value();
+        a.merge(a.clone());
+        assert_eq!(a.value(), before);
+    }
+
+    #[test]
+    fn merge_associativity() {
+        let mut a = LWWMap::new();
+        a.set("x", 1, 1, node(1));
+        let mut b = LWWMap::new();
+        b.set("x", 2, 2, node(2));
+        let mut c = LWWMap::new();
+        c.set("x", 3, 3, node(3));
+
+        let mut ab_c = a.clone();
+        ab_c.merge(b.clone());
+        ab_c.merge(c.clone());
+
+        let mut a_bc = a.clone();
+        let mut bc = b.clone();
+        bc.merge(c.clone());
+        a_bc.merge(bc);
+
+        assert_eq!(ab_c.value(), a_bc.value());
+    }
+
+    #[test]
+    fn compare_subset() {
+        let mut a = LWWMap::new();
+        a.set("x", 5, 1, node(1));
+        let mut b = LWWMap::new();
+        b.set("x", 9, 3, node(1));
+        b.set("y", 4, 1, node(2));
+
+        assert!(a.compare(&b));
+        assert!(!b.compare(&a));
     }
 }
