@@ -268,7 +268,7 @@ impl PeerRegistry {
 ///   broadcast.
 ///
 /// Consumers of `merged` MUST install the value by **merging** it into their
-/// own state (e.g. `watch_tx.send_modify(|s| s.merge(incoming.clone()))`), not
+/// own state (e.g. `watch_tx.send_modify(|s| s.merge(incoming))`), not
 /// by replacing. See `docs/crdt-net.md` §7.
 ///
 /// # Graceful shutdown

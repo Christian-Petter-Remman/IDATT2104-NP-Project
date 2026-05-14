@@ -193,7 +193,7 @@ async fn main() -> std::io::Result<()> {
         let mut rx = merged_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(incoming) = rx.recv().await {
-                state_tx.send_modify(|s| s.merge(incoming.clone()));
+                state_tx.send_modify(|s| s.merge(incoming));
             }
         });
     }
