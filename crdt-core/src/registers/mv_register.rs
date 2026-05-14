@@ -1,5 +1,5 @@
 use crate::clocks::{ClockOrder, VectorClock};
-use crate::traits::Crdt;
+use crate::traits::{Crdt, DeltaCrdt};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
@@ -77,6 +77,41 @@ impl<T: Clone + PartialEq> Crdt for MVRegister<T> {
                 matches!(ovc.partial_order(vc), ClockOrder::After | ClockOrder::Equal)
             })
         })
+    }
+}
+
+impl<T: Clone + PartialEq> DeltaCrdt for MVRegister<T> {
+    /// Delta is itself an `MVRegister` carrying only the entries the
+    /// receiver hasn't yet observed.
+    type Delta = MVRegister<T>;
+    type Version = VectorClock;
+
+    fn version(&self) -> Self::Version {
+        let mut frontier = VectorClock::new();
+        for (vc, _) in &self.entries {
+            frontier.merge(vc.clone());
+        }
+        frontier
+    }
+
+    fn delta_since(&self, since: &Self::Version) -> Self::Delta {
+        // Include entries whose clock has at least one component strictly
+        // greater than `since` — i.e. `since` does not dominate `vc`.
+        let entries = self
+            .entries
+            .iter()
+            .filter(|(vc, _)| !since.dominates(vc))
+            .cloned()
+            .collect();
+        MVRegister { entries }
+    }
+
+    fn merge_delta(&mut self, delta: Self::Delta) {
+        self.merge(delta);
+    }
+
+    fn is_empty_delta(delta: &Self::Delta) -> bool {
+        delta.entries.is_empty()
     }
 }
 
