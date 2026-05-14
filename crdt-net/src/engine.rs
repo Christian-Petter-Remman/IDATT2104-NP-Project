@@ -268,7 +268,7 @@ impl PeerRegistry {
 ///   broadcast.
 ///
 /// Consumers of `merged` MUST install the value by **merging** it into their
-/// own state (e.g. `watch_tx.send_modify(|s| *s = s.merge(&incoming))`), not
+/// own state (e.g. `watch_tx.send_modify(|s| s.merge(incoming))`), not
 /// by replacing. See `docs/crdt-net.md` §7.
 ///
 /// # Graceful shutdown
@@ -508,7 +508,8 @@ async fn handle_connection<T>(
             for entry in known_peers {
                 registry.add_resolved(entry.node_id, entry.addr);
             }
-            let merged_value = local.borrow().merge(&state);
+            let mut merged_value = local.borrow().clone();
+            merged_value.merge(state);
             let _ = merged.send(merged_value);
         }
         Ok(Ok(GossipMessage::Goodbye {

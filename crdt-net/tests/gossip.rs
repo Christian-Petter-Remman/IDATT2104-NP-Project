@@ -37,7 +37,7 @@ impl Node {
         let mut forward_rx = merged_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(incoming) = forward_rx.recv().await {
-                forward_tx.send_modify(|s| *s = s.merge(&incoming));
+                forward_tx.send_modify(|s| s.merge(incoming));
             }
         });
 

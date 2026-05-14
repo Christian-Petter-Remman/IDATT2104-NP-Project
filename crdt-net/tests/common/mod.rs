@@ -47,14 +47,18 @@ impl Crdt for MockCrdt {
         self.total()
     }
 
-    fn merge(&self, other: &Self) -> Self {
-        let mut out = self.counts.clone();
-        for (k, v) in &other.counts {
-            let slot = out.entry(*k).or_default();
-            if *v > *slot {
-                *slot = *v;
+    fn merge(&mut self, other: Self) {
+        for (k, v) in other.counts {
+            let slot = self.counts.entry(k).or_default();
+            if v > *slot {
+                *slot = v;
             }
         }
-        Self { counts: out }
+    }
+
+    fn compare(&self, other: &Self) -> bool {
+        self.counts
+            .iter()
+            .all(|(k, v)| other.counts.get(k).is_some_and(|ov| v <= ov))
     }
 }
