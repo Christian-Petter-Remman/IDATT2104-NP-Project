@@ -92,7 +92,7 @@ export const useCanvasStore = defineStore('canvas', {
 
       // active_peers: [uuid, ...]
       this.activePeers.clear()
-      for (const peer of (msg.active_peers ?? [])) {
+      for (const peer of (msg.users ?? [])) {
         this.activePeers.add(peer)
       }
 

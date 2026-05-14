@@ -13,7 +13,15 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let node_id = Uuid::new_v4();
-    let state = AppState::new(node_id, NoopGossip::new());
+
+    let port: u16 = std::env::args()
+        .position(|a| a == "--port")
+        .and_then(|i| std::env::args().nth(i + 1))
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8080);
+
+    let addr = format!("0.0.0.0:{port}");
+    let state = AppState::new(node_id, addr.clone(), NoopGossip::new());
 
     // TODO: replace NoopGossip with crdt-net's GossipEngine once available.
     // GossipEngine must implement GossipBackend (see gossip.rs).
@@ -27,13 +35,6 @@ async fn main() {
         tracing::warn!("gossip listener exited");
     });
 
-    let port: u16 = std::env::args()
-        .position(|a| a == "--port")
-        .and_then(|i| std::env::args().nth(i + 1))
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8080);
-
-    let addr = format!("0.0.0.0:{port}");
     tracing::info!("node {} listening on {}", node_id, addr);
 
     let listener = tokio::net::TcpListener::bind(&addr)

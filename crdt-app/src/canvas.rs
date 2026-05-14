@@ -123,7 +123,7 @@ impl From<&CanvasDocument> for CanvasView {
                 .iter()
                 .map(|((x, y), r)| {
                     let (a, b, c, d) = r.value();
-                    (format!("{x}_{y}"), [a, b, c, d])
+                    (format!("{x},{y}"), [a, b, c, d])
                 })
                 .collect(),
             users,
