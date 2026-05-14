@@ -5,7 +5,6 @@
 //! Concurrent add and remove of the same element results in
 //! the element being present.
 use crate::traits::{Crdt, NodeId};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 

@@ -1,5 +1,3 @@
-use serde::{Deserialize, Serialize};
-
 use crate::clocks::{ClockOrder, VectorClock};
 use crate::traits::Crdt;
 
