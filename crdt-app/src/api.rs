@@ -43,8 +43,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 async fn get_canvas(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    let canvas = s.canvas.read().await;
-    Json(CanvasView::from(&*canvas))
+    Json(CanvasView::from(&*s.canvas()))
 }
 
 async fn paint(
@@ -52,20 +51,20 @@ async fn paint(
     Json(req): Json<PaintRequest>,
 ) -> impl IntoResponse {
     let color: Rgba = (req.color[0], req.color[1], req.color[2], req.color[3]);
-    s.paint(req.x, req.y, color).await;
+    s.paint(req.x, req.y, color);
     Json(serde_json::json!({ "ok": true }))
 }
 
 async fn node_info(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     Json(NodeInfo {
-        id: s.node_id.to_string(),
-        addr: s.addr.clone(),
+        id: s.node_id().to_string(),
+        addr: s.addr().to_string(),
     })
 }
 
 async fn get_palette(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    let canvas = s.canvas.read().await;
-    let colors: Vec<[u8; 4]> = canvas
+    let colors: Vec<[u8; 4]> = s
+        .canvas()
         .palette_colors()
         .into_iter()
         .map(|(r, g, b, a)| [r, g, b, a])
@@ -77,8 +76,7 @@ async fn add_palette(
     State(s): State<Arc<AppState>>,
     Json(req): Json<PaletteRequest>,
 ) -> impl IntoResponse {
-    s.add_palette_color((req.color[0], req.color[1], req.color[2], req.color[3]))
-        .await;
+    s.add_palette_color((req.color[0], req.color[1], req.color[2], req.color[3]));
     StatusCode::CREATED
 }
 
@@ -86,9 +84,7 @@ async fn remove_palette(
     State(s): State<Arc<AppState>>,
     Json(req): Json<PaletteRequest>,
 ) -> impl IntoResponse {
-    let removed = s
-        .remove_palette_color((req.color[0], req.color[1], req.color[2], req.color[3]))
-        .await;
+    let removed = s.remove_palette_color((req.color[0], req.color[1], req.color[2], req.color[3]));
     if removed {
         StatusCode::NO_CONTENT
     } else {
@@ -97,8 +93,8 @@ async fn remove_palette(
 }
 
 async fn get_leaderboard(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    let canvas = s.canvas.read().await;
-    let board: Vec<LeaderboardEntry> = canvas
+    let board: Vec<LeaderboardEntry> = s
+        .canvas()
         .ownership_leaderboard()
         .into_iter()
         .map(|(id, n)| LeaderboardEntry {
@@ -115,13 +111,13 @@ async fn ws_handler(State(s): State<Arc<AppState>>, ws: WebSocketUpgrade) -> imp
 
 async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>) {
     let user_id = Uuid::new_v4();
-    state.add_user(user_id).await;
+    state.add_user(user_id);
 
     {
-        let canvas = state.canvas.read().await;
-        let Ok(msg) = serde_json::to_string(&CanvasView::from(&*canvas)) else {
+        let snapshot = state.snapshot();
+        let Ok(msg) = serde_json::to_string(&CanvasView::from(&snapshot)) else {
             tracing::error!("failed to serialize canvas state");
-            state.remove_user(&user_id).await;
+            state.remove_user(&user_id);
             return;
         };
         if socket
@@ -129,31 +125,29 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState
             .await
             .is_err()
         {
-            state.remove_user(&user_id).await;
+            state.remove_user(&user_id);
             return;
         }
     }
-    let mut rx = state.ws_tx.subscribe();
+
+    let mut rx = state.subscribe();
     loop {
-        match rx.recv().await {
-            Ok(canvas) => {
-                let Ok(msg) = serde_json::to_string(&CanvasView::from(&canvas)) else {
-                    tracing::error!("failed to serialize canvas state");
-                    break;
-                };
-                if socket
-                    .send(axum::extract::ws::Message::Text(msg))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                tracing::warn!("ws client lagged, dropped {} messages", n);
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        if rx.changed().await.is_err() {
+            break;
+        }
+        let snapshot = rx.borrow_and_update().clone();
+        let Ok(msg) = serde_json::to_string(&CanvasView::from(&snapshot)) else {
+            tracing::error!("failed to serialize canvas state");
+            break;
+        };
+        if socket
+            .send(axum::extract::ws::Message::Text(msg))
+            .await
+            .is_err()
+        {
+            break;
         }
     }
-    state.remove_user(&user_id).await;
+
+    state.remove_user(&user_id);
 }

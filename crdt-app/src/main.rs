@@ -2,11 +2,10 @@ mod api;
 mod canvas;
 mod state;
 
-use canvas::CanvasDocument;
 use crdt_net::{GossipConfig, GossipEngine};
 use state::AppState;
 use std::sync::Arc;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 #[derive(clap::Parser)]
@@ -38,8 +37,8 @@ async fn main() {
         })
         .collect();
 
-    let (local_tx, local_rx) = watch::channel(CanvasDocument::new());
-    let (merged_tx, _) = broadcast::channel::<CanvasDocument>(64);
+    let (state, local_rx) = AppState::new(node_id, http_addr.clone());
+    let (merged_tx, _) = broadcast::channel::<canvas::CanvasDocument>(64);
 
     let gossip_addr: std::net::SocketAddr =
         format!("0.0.0.0:{}", args.gossip_port).parse().unwrap();
@@ -51,13 +50,11 @@ async fn main() {
         .await
         .expect("gossip engine failed to start");
 
-    let state = AppState::new(node_id, http_addr.clone(), local_tx);
-
     let state_clone = Arc::clone(&state);
     let mut merged_rx = merged_tx.subscribe();
     tokio::spawn(async move {
         while let Ok(incoming) = merged_rx.recv().await {
-            state_clone.apply_gossip(incoming).await;
+            state_clone.apply_gossip(incoming);
         }
         tracing::warn!("gossip listener exited");
     });
