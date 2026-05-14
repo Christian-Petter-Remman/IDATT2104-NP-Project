@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tower_http::cors::CorsLayer;
 
 #[derive(Deserialize)]
 pub struct PaintRequest {
@@ -20,6 +21,7 @@ pub struct PaintRequest {
 #[derive(Serialize)]
 pub struct NodeInfo {
     pub id: String,
+    pub addr: String,
 }
 
 pub fn router<G: GossipBackend + Clone + 'static>(state: Arc<AppState<G>>) -> Router {
@@ -29,6 +31,7 @@ pub fn router<G: GossipBackend + Clone + 'static>(state: Arc<AppState<G>>) -> Ro
         .route("/api/node", get(node_info::<G>))
         .route("/ws", get(ws_handler::<G>))
         .with_state(state)
+        .layer(CorsLayer::permissive())
 }
 
 async fn get_canvas<G: GossipBackend + Clone>(
@@ -52,6 +55,7 @@ async fn node_info<G: GossipBackend + Clone>(
 ) -> impl IntoResponse {
     Json(NodeInfo {
         id: s.node_id.to_string(),
+        addr: s.addr.clone(),
     })
 }
 

@@ -7,7 +7,6 @@
 //! as [`TwoPSet`] composing two [`GSet`]s.
 use std::collections::HashMap;
 use std::hash::Hash;
-use serde::{Serialize, Deserialize};
 use crate::traits::{Crdt, NodeId};
 use crate::registers::LWWRegister;
 
@@ -20,7 +19,8 @@ use crate::registers::LWWRegister;
 ///
 /// Keys are created on first write and never removed.
 /// Key removal would require ORSet-style tracking.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LWWMap<K, V>
 where
     K: Eq + Hash + Clone,
