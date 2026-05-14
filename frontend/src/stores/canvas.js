@@ -54,10 +54,15 @@ export const useCanvasStore = defineStore('canvas', {
 
       _ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data)
-        if (msg.type === 'diff') {
-          this._applyDiff(msg)
+        // Backend wraps state in `{type, payload}`; `?? msg` keeps the
+        // client tolerant of older un-wrapped frames.
+        const data = msg.payload ?? msg
+        if (msg.type === 'snapshot') {
+          this._applySnapshot(data)
+        } else if (msg.type === 'delta') {
+          this._applyDelta(data)
         } else {
-          this._applySnapshot(msg)
+          this._applySnapshot(data)
         }
       }
 
@@ -70,71 +75,52 @@ export const useCanvasStore = defineStore('canvas', {
       _ws.onerror = () => _ws && _ws.close()
     },
 
-    _applySnapshot(msg) {
-      // pixels: [{x, y, color}] or object map
+    // Full canvas state. Replaces every collection wholesale.
+    _applySnapshot(data) {
       this.pixels.clear()
-      if (Array.isArray(msg.pixels)) {
-        for (const p of msg.pixels) {
-          this.pixels.set(`${p.x},${p.y}`, p.color)
-        }
-      } else if (msg.pixels && typeof msg.pixels === 'object') {
-        // object keyed by "x,y" → [r,g,b,a]
-        for (const [key, color] of Object.entries(msg.pixels)) {
-          this.pixels.set(key, color)
-        }
+      for (const [key, color] of Object.entries(data.pixels ?? {})) {
+        this.pixels.set(key, color)
       }
-
-      // palette: [[r,g,b,a], ...]
       this.palette.clear()
-      for (const color of (msg.palette ?? [])) {
+      for (const color of (data.palette ?? [])) {
         this.palette.add(JSON.stringify(color))
       }
-
-      // active_peers: [uuid, ...]
       this.activePeers.clear()
-      for (const peer of (msg.active_peers ?? msg.users ?? [])) {
+      for (const peer of (data.active_peers ?? [])) {
         this.activePeers.add(peer)
       }
-
-      // paint_total from GCounter value or direct field
-      this.paintTotal = msg.paint_total ?? msg.paint_counts?.value ?? 0
-
-      // leaderboard
-      this.leaderboard = msg.leaderboard ?? []
+      this.paintTotal = data.paint_total ?? 0
+      this.leaderboard = data.leaderboard ?? []
     },
 
-    _applyDiff(msg) {
-      if (msg.pixels) {
-        for (const p of msg.pixels) {
-          this.pixels.set(`${p.x},${p.y}`, p.color)
-        }
+    // Sparse update from the backend's `CanvasDeltaView`.
+    //
+    // `pixels` carries only the cells that changed and is patched into
+    // the existing Map (no clear). The other fields are present only
+    // when their underlying CRDT changed — when present, replace the
+    // whole collection (the backend ships the full derived view for
+    // these to keep the projection simple).
+    _applyDelta(data) {
+      for (const [key, color] of Object.entries(data.pixels ?? {})) {
+        this.pixels.set(key, color)
       }
-      if (msg.palette_add) {
-        for (const color of msg.palette_add) {
-          this.palette.add(JSON.stringify(color))
-        }
-      }
-      if (msg.palette_rm) {
-        for (const color of msg.palette_rm) {
-          this.palette.delete(JSON.stringify(color))
-        }
-      }
-      if (msg.cursors) {
-        for (const c of msg.cursors) {
-          this.cursors.set(c.user_id, { x: c.x, y: c.y })
-        }
-      }
-      if (msg.active_peers) {
+      if (data.active_peers !== undefined) {
         this.activePeers.clear()
-        for (const peer of msg.active_peers) {
+        for (const peer of data.active_peers) {
           this.activePeers.add(peer)
         }
       }
-      if (msg.paint_total != null) {
-        this.paintTotal = msg.paint_total
+      if (data.palette !== undefined) {
+        this.palette.clear()
+        for (const color of data.palette) {
+          this.palette.add(JSON.stringify(color))
+        }
       }
-      if (msg.leaderboard) {
-        this.leaderboard = msg.leaderboard
+      if (data.paint_total !== undefined) {
+        this.paintTotal = data.paint_total
+      }
+      if (data.leaderboard !== undefined) {
+        this.leaderboard = data.leaderboard
       }
     },
 

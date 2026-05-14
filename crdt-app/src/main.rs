@@ -5,6 +5,7 @@ mod state;
 use crdt_net::{GossipConfig, GossipEngine};
 use state::AppState;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -17,11 +18,24 @@ struct Args {
     /// Comma-separated bootstrap peers, e.g. 127.0.0.1:9091,127.0.0.1:9092
     #[arg(long, default_value = "")]
     peers: String,
+    /// Gossip tick interval in milliseconds. Lower = snappier
+    /// convergence, more network chatter. 200ms gives near-real-time
+    /// updates between peers on localhost.
+    #[arg(long, default_value_t = 200)]
+    gossip_interval_ms: u64,
 }
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // Default filter: app + gossip at INFO, mDNS silenced. The mdns-sd
+    // crate emits ERRORs for every network interface it can't use
+    // (WSL virtual adapters, IPv6-only NICs) which is normal and not
+    // actionable. Override with RUST_LOG when debugging discovery.
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,mdns_sd=off"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
     let args = <Args as clap::Parser>::parse();
     let node_id = Uuid::new_v4();
     let http_addr = format!("0.0.0.0:{}", args.port);
@@ -44,7 +58,8 @@ async fn main() {
         format!("0.0.0.0:{}", args.gossip_port).parse().unwrap();
     let config = GossipConfig::new(node_id, gossip_addr)
         .with_peers(bootstrap)
-        .with_mdns(false);
+        .with_interval(Duration::from_millis(args.gossip_interval_ms))
+        .with_mdns(true);
 
     let _engine = GossipEngine::run(config, local_rx, merged_tx.clone())
         .await
