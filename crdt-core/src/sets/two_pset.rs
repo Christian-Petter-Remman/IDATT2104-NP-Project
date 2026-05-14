@@ -5,8 +5,8 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 
-use crate::traits::Crdt;
 use super::gset::GSet;
+use crate::traits::Crdt;
 
 /// A set that supports both add and remove, but removal is permanent.
 ///
@@ -15,24 +15,33 @@ use super::gset::GSet;
 /// if it has been added and not removed.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
-pub struct TwoPSet<T> 
-where 
+pub struct TwoPSet<T>
+where
     T: Eq + Hash + Clone,
 {
     added: GSet<T>,
     removed: GSet<T>,
 }
 
-impl<T> TwoPSet<T>
-where  
+impl<T> Default for TwoPSet<T>
+where
     T: Eq + Hash + Clone,
 {
-    /// Creates an empty TwoPSet.
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
             added: GSet::new(),
             removed: GSet::new(),
         }
+    }
+}
+
+impl<T> TwoPSet<T>
+where
+    T: Eq + Hash + Clone,
+{
+    /// Creates an empty TwoPSet.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Adds an element to the set.
@@ -45,7 +54,7 @@ where
         }
         self.added.insert(element)
     }
-        
+
     /// Removes an element from the set permanently.
     ///
     /// Returns `true` if the element was present before removal.
@@ -54,17 +63,16 @@ where
         if self.added.contains(&element) {
             self.removed.insert(element);
             return true;
-        } 
-        return false;
+        }
+        false
     }
 
-    /// Returns `true` if the element is in the set. 
+    /// Returns `true` if the element is in the set.
     /// Meaning in added and not removed set.
     pub fn contains(&self, element: &T) -> bool {
         self.added.contains(element) && !self.removed.contains(element)
     }
 }
-
 
 impl<T> Crdt for TwoPSet<T>
 where

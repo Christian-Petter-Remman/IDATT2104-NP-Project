@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
-use uuid::Uuid;
-use serde::{Serialize, Deserialize};
-use crdt_core::traits::{Crdt, NodeId};
 use crdt_core::registers::lww_register::LWWRegister;
 use crdt_core::sets::ORSet;
+use crdt_core::traits::{Crdt, NodeId};
+use serde::{Deserialize, Serialize};
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use uuid::Uuid;
 
 pub type Rgba = (u8, u8, u8, u8);
 /// Canvas is bounded to 256×256 by u8 coordinates.
@@ -33,7 +33,9 @@ impl Default for CanvasDocument {
 }
 
 impl CanvasDocument {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn paint(&mut self, x: u8, y: u8, color: Rgba, node_id: NodeId, timestamp: u64) {
         self.pixels
@@ -55,7 +57,11 @@ impl CanvasDocument {
     }
 
     pub fn max_pixel_timestamp(&self) -> u64 {
-        self.pixels.values().map(|r| r.timestamp()).max().unwrap_or(0)
+        self.pixels
+            .values()
+            .map(|r| r.timestamp())
+            .max()
+            .unwrap_or(0)
     }
 
     // TODO: wire cursor updates via API once crdt-net gossip is integrated
@@ -64,27 +70,38 @@ impl CanvasDocument {
 impl Crdt for CanvasDocument {
     type Value = Self;
 
-    fn value(&self) -> Self { self.clone() }
+    fn value(&self) -> Self {
+        self.clone()
+    }
 
     fn merge(&mut self, other: Self) {
         for ((x, y), reg) in other.pixels {
             match self.pixels.entry((x, y)) {
                 Entry::Occupied(mut e) => e.get_mut().merge(reg),
-                Entry::Vacant(e) => { e.insert(reg); }
+                Entry::Vacant(e) => {
+                    e.insert(reg);
+                }
             }
         }
         self.users.merge(other.users);
         for (uid, reg) in other.cursors {
             match self.cursors.entry(uid) {
                 Entry::Occupied(mut e) => e.get_mut().merge(reg),
-                Entry::Vacant(e) => { e.insert(reg); }
+                Entry::Vacant(e) => {
+                    e.insert(reg);
+                }
             }
         }
     }
 
     fn compare(&self, other: &Self) -> bool {
-        self.pixels.iter().all(|(k, r)| other.pixels.get(k).map_or(false, |o| r.compare(o)))
-            && self.cursors.iter().all(|(k, r)| other.cursors.get(k).map_or(false, |o| r.compare(o)))
+        self.pixels
+            .iter()
+            .all(|(k, r)| other.pixels.get(k).is_some_and(|o| r.compare(o)))
+            && self
+                .cursors
+                .iter()
+                .all(|(k, r)| other.cursors.get(k).is_some_and(|o| r.compare(o)))
             && self.users.compare(&other.users)
     }
 }
@@ -101,7 +118,9 @@ impl From<&CanvasDocument> for CanvasView {
         let mut users: Vec<String> = doc.active_users().iter().map(|u| u.to_string()).collect();
         users.sort();
         Self {
-            pixels: doc.pixels.iter()
+            pixels: doc
+                .pixels
+                .iter()
                 .map(|((x, y), r)| {
                     let (a, b, c, d) = r.value();
                     (format!("{x}_{y}"), [a, b, c, d])
@@ -116,10 +135,15 @@ impl From<&CanvasDocument> for CanvasView {
 mod tests {
     use super::*;
 
-    fn node(id: u128) -> NodeId { Uuid::from_u128(id) }
+    fn node(id: u128) -> NodeId {
+        Uuid::from_u128(id)
+    }
 
     fn get_pixel(doc: &CanvasDocument, x: u8, y: u8) -> Rgba {
-        doc.pixels.get(&(x, y)).map(|r| r.value()).unwrap_or(DEFAULT_PIXEL)
+        doc.pixels
+            .get(&(x, y))
+            .map(|r| r.value())
+            .unwrap_or(DEFAULT_PIXEL)
     }
 
     #[test]
@@ -150,8 +174,10 @@ mod tests {
         let mut b = CanvasDocument::new();
         a.paint(0, 0, (255, 0, 0, 255), node(1), 10);
         b.paint(0, 0, (0, 0, 255, 255), node(2), 5);
-        let mut a1 = a.clone(); a1.merge(b.clone());
-        let mut b1 = b.clone(); b1.merge(a.clone());
+        let mut a1 = a.clone();
+        a1.merge(b.clone());
+        let mut b1 = b.clone();
+        b1.merge(a.clone());
         assert_eq!(get_pixel(&a1, 0, 0), get_pixel(&b1, 0, 0));
     }
 

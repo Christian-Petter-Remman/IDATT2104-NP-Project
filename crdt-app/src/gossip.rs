@@ -1,6 +1,6 @@
+use crate::canvas::CanvasDocument;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use crate::canvas::CanvasDocument;
 
 /// Interface between crdt-app and the gossip layer.
 /// crdt-net implements this trait for its GossipEngine.

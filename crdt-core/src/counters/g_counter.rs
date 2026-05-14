@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::traits::{Crdt, NodeId};
+use std::collections::HashMap;
 
 /// Grow-only counter.
 ///
@@ -13,7 +13,9 @@ pub struct GCounter {
 
 impl GCounter {
     pub fn new() -> Self {
-        Self { counts: HashMap::new() }
+        Self {
+            counts: HashMap::new(),
+        }
     }
 
     /// Increment this node's count by 1.
@@ -27,7 +29,9 @@ impl GCounter {
 }
 
 impl Default for GCounter {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Crdt for GCounter {
@@ -57,7 +61,9 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    fn n(id: u128) -> NodeId { Uuid::from_u128(id) }
+    fn n(id: u128) -> NodeId {
+        Uuid::from_u128(id)
+    }
 
     #[test]
     fn new_starts_at_zero() {
@@ -106,8 +112,10 @@ mod tests {
         a.increment(n(1));
         let mut b = GCounter::new();
         b.increment(n(2));
-        let mut ab = a.clone(); ab.merge(b.clone());
-        let mut ba = b.clone(); ba.merge(a.clone());
+        let mut ab = a.clone();
+        ab.merge(b.clone());
+        let mut ba = b.clone();
+        ba.merge(a.clone());
         assert_eq!(ab.value(), ba.value());
     }
 

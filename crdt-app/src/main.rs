@@ -1,11 +1,11 @@
+mod api;
 mod canvas;
 mod gossip;
 mod state;
-mod api;
 
-use std::sync::Arc;
-use gossip::{NoopGossip, GossipBackend};
+use gossip::{GossipBackend, NoopGossip};
 use state::AppState;
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[tokio::main]

@@ -28,6 +28,12 @@ pub trait Crdt: Clone {
     /// Guarantees convergence. The result is the same
     /// regardless of merge order, grouping, or repetition.
     ///
+    /// Takes ownership of `other` because merge is a one-way absorption.
+    /// After merging, `other`'s data lives inside `self` and `other` has
+    /// no further purpose. Consuming it avoids unnecessary cloning and
+    /// lets the compiler prevent accidental use of the stale replica.
+    /// Callers who need `other` alive after merging can `.clone()` before calling.
+    ///
     /// Merge order:
     /// `A.merge(B) == B.merge(A)`
     /// In P2P, you can't control which peer's state arrives first.
@@ -42,8 +48,12 @@ pub trait Crdt: Clone {
     fn merge(&mut self, other: Self);
 
     /// Returns `true` if self is a subset of other.
+    /// Returns `true` if self is a subset of other.
     ///
     /// If `self.compare(other)` is `true`, then `self.merge(other)` would
     /// result in `other` (i.e. merging is not required for the other side).
+    ///
+    /// Borrows `other` because compare is a read-only check,
+    /// both replicas remain unchanged and usable afterward.
     fn compare(&self, other: &Self) -> bool;
 }

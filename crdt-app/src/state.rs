@@ -1,10 +1,10 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{RwLock, broadcast};
-use uuid::Uuid;
-use crdt_core::Crdt;
 use crate::canvas::{CanvasDocument, Rgba};
 use crate::gossip::GossipBackend;
+use crdt_core::Crdt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
+use uuid::Uuid;
 
 pub struct AppState<G: GossipBackend> {
     pub node_id: Uuid,
@@ -42,7 +42,8 @@ impl<G: GossipBackend> AppState<G> {
         loop {
             let current = self.timestamp.load(Ordering::Relaxed);
             let next = wall.max(current) + 1;
-            if self.timestamp
+            if self
+                .timestamp
                 .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
             {
@@ -76,8 +77,11 @@ impl<G: GossipBackend> AppState<G> {
     fn advance_ts(&self, seen: u64) {
         loop {
             let current = self.timestamp.load(Ordering::Relaxed);
-            if seen <= current { break; }
-            if self.timestamp
+            if seen <= current {
+                break;
+            }
+            if self
+                .timestamp
                 .compare_exchange(current, seen, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
             {
@@ -92,7 +96,9 @@ mod tests {
     use super::*;
     use crate::gossip::NoopGossip;
 
-    fn node_id() -> Uuid { Uuid::from_u128(1) }
+    fn node_id() -> Uuid {
+        Uuid::from_u128(1)
+    }
 
     #[tokio::test]
     async fn paint_updates_canvas() {

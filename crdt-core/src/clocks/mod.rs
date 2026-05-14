@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+
 use crate::traits::{Crdt, NodeId};
 
 /// Causality primitive used throughout the canvas CRDT.

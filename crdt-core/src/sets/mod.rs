@@ -1,7 +1,7 @@
 pub mod gset;
-pub mod two_pset;
 pub mod orset;
+pub mod two_pset;
 
 pub use gset::GSet;
-pub use two_pset::TwoPSet;
 pub use orset::ORSet;
+pub use two_pset::TwoPSet;

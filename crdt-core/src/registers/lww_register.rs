@@ -10,11 +10,29 @@ pub struct LWWRegister<T> {
 
 impl<T: Clone + PartialEq> LWWRegister<T> {
     pub fn new(value: T, timestamp: u64, node_id: NodeId) -> Self {
-        Self { value, timestamp, node_id }
+        Self {
+            value,
+            timestamp,
+            node_id,
+        }
     }
 
-    pub fn set(&mut self, value: T, timestamp: u64, node_id: NodeId) {
-        self.merge(LWWRegister::new(value, timestamp, node_id));
+    /// Returns true if `other` would replace `self` in a merge.
+    fn is_superseded_by(&self, other: &Self) -> bool {
+        other.timestamp > self.timestamp
+            || (other.timestamp == self.timestamp && other.node_id > self.node_id)
+    }
+
+    /// Updates the register value if the new write wins.
+    /// Returns `true` if the value was updated, `false` if
+    /// the existing value has a higher or equal timestamp.
+    pub fn set(&mut self, value: T, timestamp: u64, node_id: NodeId) -> bool {
+        let incoming = LWWRegister::new(value, timestamp, node_id);
+        if self.is_superseded_by(&incoming) {
+            *self = incoming;
+            return true;
+        }
+        false
     }
 
     pub fn timestamp(&self) -> u64 {
@@ -29,11 +47,9 @@ impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {
         self.value.clone()
     }
 
-    /// Higher timestamp wins; equal timestamp → higher `node_id` wins.
+    /// Higher timestamp wins; equal timestamp -> higher `node_id` wins.
     fn merge(&mut self, other: Self) {
-        if other.timestamp > self.timestamp
-            || (other.timestamp == self.timestamp && other.node_id > self.node_id)
-        {
+        if self.is_superseded_by(&other) {
             *self = other;
         }
     }
@@ -44,8 +60,7 @@ impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {
     /// For LWWRegister this means `other` has a higher timestamp,
     /// or equal timestamp with a higher or equal node_id.
     fn compare(&self, other: &Self) -> bool {
-        other.timestamp > self.timestamp
-            || (other.timestamp == self.timestamp && other.node_id >= self.node_id)
+        !other.is_superseded_by(self)
     }
 }
 
@@ -55,7 +70,9 @@ mod tests {
     use proptest::prelude::*;
     use uuid::Uuid;
 
-    fn n(id: u128) -> NodeId { Uuid::from_u128(id) }
+    fn n(id: u128) -> NodeId {
+        Uuid::from_u128(id)
+    }
 
     fn arb_lww() -> impl Strategy<Value = LWWRegister<u32>> {
         (0u32..=100u32, 0u64..=10u64, 0usize..3).prop_map(|(value, timestamp, idx)| {
