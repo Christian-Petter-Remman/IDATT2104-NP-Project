@@ -82,9 +82,30 @@ impl AppState {
         let _ = self.ws_tx.send(snap);
     }
 
-    pub async fn remove_palette_color(&self, color: Rgba) {
+    pub async fn remove_palette_color(&self, color: Rgba) -> bool {
         let mut canvas = self.canvas.write().await;
-        canvas.remove_palette_color(&color);
+        let removed = canvas.remove_palette_color(&color);
+        if removed {
+            let snap = canvas.clone();
+            drop(canvas);
+            let _ = self.local_tx.send(snap.clone());
+            let _ = self.ws_tx.send(snap);
+        }
+        removed
+    }
+
+    pub async fn add_user(&self, user: Uuid) {
+        let mut canvas = self.canvas.write().await;
+        canvas.add_user(user, &self.node_id);
+        let snap = canvas.clone();
+        drop(canvas);
+        let _ = self.local_tx.send(snap.clone());
+        let _ = self.ws_tx.send(snap);
+    }
+
+    pub async fn remove_user(&self, user: &Uuid) {
+        let mut canvas = self.canvas.write().await;
+        canvas.remove_user(user);
         let snap = canvas.clone();
         drop(canvas);
         let _ = self.local_tx.send(snap.clone());

@@ -10,6 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct PaintRequest {
@@ -85,9 +86,14 @@ async fn remove_palette(
     State(s): State<Arc<AppState>>,
     Json(req): Json<PaletteRequest>,
 ) -> impl IntoResponse {
-    s.remove_palette_color((req.color[0], req.color[1], req.color[2], req.color[3]))
+    let removed = s
+        .remove_palette_color((req.color[0], req.color[1], req.color[2], req.color[3]))
         .await;
-    StatusCode::NO_CONTENT
+    if removed {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
 }
 
 async fn get_leaderboard(State(s): State<Arc<AppState>>) -> impl IntoResponse {
@@ -108,10 +114,14 @@ async fn ws_handler(State(s): State<Arc<AppState>>, ws: WebSocketUpgrade) -> imp
 }
 
 async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>) {
+    let user_id = Uuid::new_v4();
+    state.add_user(user_id).await;
+
     {
         let canvas = state.canvas.read().await;
         let Ok(msg) = serde_json::to_string(&CanvasView::from(&*canvas)) else {
             tracing::error!("failed to serialize canvas state");
+            state.remove_user(&user_id).await;
             return;
         };
         if socket
@@ -119,6 +129,7 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState
             .await
             .is_err()
         {
+            state.remove_user(&user_id).await;
             return;
         }
     }
@@ -144,4 +155,5 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
+    state.remove_user(&user_id).await;
 }

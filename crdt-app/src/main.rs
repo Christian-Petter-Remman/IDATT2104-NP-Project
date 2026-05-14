@@ -31,7 +31,11 @@ async fn main() {
         .peers
         .split(',')
         .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse().ok())
+        .filter_map(|s| {
+            s.parse()
+                .map_err(|_| tracing::warn!("invalid peer address ignored: {s}"))
+                .ok()
+        })
         .collect();
 
     let (local_tx, local_rx) = watch::channel(CanvasDocument::new());

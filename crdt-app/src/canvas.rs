@@ -23,7 +23,12 @@ mod pixel_map_serde {
     where
         S: Serializer,
     {
-        map.iter().collect::<Vec<_>>().serialize(s)
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(map.len()))?;
+        for pair in map.iter() {
+            seq.serialize_element(&pair)?;
+        }
+        seq.end()
     }
 
     pub fn deserialize<'de, D>(
@@ -73,12 +78,10 @@ impl CanvasDocument {
         self.paint_counts.increment(node_id);
     }
 
-    #[allow(dead_code)]
     pub fn add_user(&mut self, user: Uuid, node_id: &NodeId) {
         self.users.insert(user, node_id);
     }
 
-    #[allow(dead_code)]
     pub fn remove_user(&mut self, user: &Uuid) -> bool {
         self.users.remove(user)
     }
