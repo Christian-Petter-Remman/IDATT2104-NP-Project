@@ -49,7 +49,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/canvas", get(get_canvas))
         .route("/api/canvas/paint", post(paint))
         .route("/api/node", get(node_info))
-        .route("/api/palette", get(get_palette).post(add_palette).delete(remove_palette))
+        .route(
+            "/api/palette",
+            get(get_palette).post(add_palette).delete(remove_palette),
+        )
         .route("/api/leaderboard", get(get_leaderboard))
         .route("/ws", get(ws_handler))
         .with_state(state)
@@ -60,10 +63,7 @@ async fn get_canvas(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     Json(CanvasView::from(&*s.canvas()))
 }
 
-async fn paint(
-    State(s): State<Arc<AppState>>,
-    Json(req): Json<PaintRequest>,
-) -> impl IntoResponse {
+async fn paint(State(s): State<Arc<AppState>>, Json(req): Json<PaintRequest>) -> impl IntoResponse {
     let color: Rgba = (req.color[0], req.color[1], req.color[2], req.color[3]);
     s.paint(req.x, req.y, color);
     Json(serde_json::json!({ "ok": true }))

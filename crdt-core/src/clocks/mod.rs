@@ -37,7 +37,7 @@ impl VectorClock {
     }
 
     /// Advances `node`'s counter past all observed values and returns it.
-    /// 
+    ///
     /// This is the Lamport clock rule applied to the vector clock.
     /// The returned timestamp is strictly greater than any component
     /// in the clock, making it safe to use as an LWW timestamp.

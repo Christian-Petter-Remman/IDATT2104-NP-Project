@@ -32,14 +32,11 @@ mod pixel_map_serde {
         seq.end()
     }
 
-    pub fn deserialize<'de, D>(
-        d: D,
-    ) -> Result<HashMap<PixelCoord, LWWRegister<Rgba>>, D::Error>
+    pub fn deserialize<'de, D>(d: D) -> Result<HashMap<PixelCoord, LWWRegister<Rgba>>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Vec::<(PixelCoord, LWWRegister<Rgba>)>::deserialize(d)
-            .map(|v| v.into_iter().collect())
+        Vec::<(PixelCoord, LWWRegister<Rgba>)>::deserialize(d).map(|v| v.into_iter().collect())
     }
 }
 
@@ -140,6 +137,12 @@ impl CanvasDocument {
     }
 
     /// Update a peer's cursor position.
+    ///
+    /// Not wired through the REST API yet; the `cursors` field exists so
+    /// CRDT merge/delta logic stays correct once the cursor endpoint
+    /// lands. Marked `#[allow(dead_code)]` so the field's merge path
+    /// keeps compiling without forcing CI failures in the interim.
+    #[allow(dead_code)]
     pub fn update_cursor(&mut self, user: Uuid, x: u8, y: u8, node_id: NodeId) {
         let ts = self.clock.increment(node_id);
         self.cursors
@@ -203,10 +206,7 @@ mod pixel_vec_serde {
     use super::*;
     use serde::{Deserializer, Serializer};
 
-    pub fn serialize<S>(
-        v: &Vec<(PixelCoord, LWWRegister<Rgba>)>,
-        s: S,
-    ) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(v: &Vec<(PixelCoord, LWWRegister<Rgba>)>, s: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -218,9 +218,7 @@ mod pixel_vec_serde {
         seq.end()
     }
 
-    pub fn deserialize<'de, D>(
-        d: D,
-    ) -> Result<Vec<(PixelCoord, LWWRegister<Rgba>)>, D::Error>
+    pub fn deserialize<'de, D>(d: D) -> Result<Vec<(PixelCoord, LWWRegister<Rgba>)>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -415,8 +413,7 @@ impl CanvasDeltaView {
         let active_peers = if ORSet::<Uuid>::is_empty_delta(&delta.users) {
             None
         } else {
-            let mut peers: Vec<String> =
-                doc.active_users().iter().map(|u| u.to_string()).collect();
+            let mut peers: Vec<String> = doc.active_users().iter().map(|u| u.to_string()).collect();
             peers.sort();
             Some(peers)
         };

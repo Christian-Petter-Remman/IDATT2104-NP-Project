@@ -83,8 +83,8 @@ impl<T: Clone + PartialEq> DeltaCrdt for LWWRegister<T> {
 
     fn delta_since(&self, since: &Self::Version) -> Self::Delta {
         let (since_ts, since_node) = *since;
-        let exceeds = self.timestamp > since_ts
-            || (self.timestamp == since_ts && self.node_id > since_node);
+        let exceeds =
+            self.timestamp > since_ts || (self.timestamp == since_ts && self.node_id > since_node);
         if exceeds {
             Some(self.clone())
         } else {

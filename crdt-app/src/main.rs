@@ -32,8 +32,8 @@ async fn main() {
     // (WSL virtual adapters, IPv6-only NICs) which is normal and not
     // actionable. Override with RUST_LOG when debugging discovery.
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,mdns_sd=off"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,mdns_sd=off"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let args = <Args as clap::Parser>::parse();

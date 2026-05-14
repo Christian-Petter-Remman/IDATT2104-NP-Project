@@ -98,7 +98,9 @@ impl AppState {
 
     pub fn remove_user(&self, user: &Uuid) {
         let user = *user;
-        self.mutate(|doc, _| { doc.remove_user(&user); });
+        self.mutate(|doc, _| {
+            doc.remove_user(&user);
+        });
     }
 
     pub fn add_palette_color(&self, color: Rgba) {
