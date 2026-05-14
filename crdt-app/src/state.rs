@@ -1,131 +1,112 @@
+//! Application state — the single source of truth for the shared canvas.
+//!
+//! [`AppState`] sits between the network layer (`crdt-net`) and the API
+//! layer (`api.rs`). All mutations — local or from gossip — flow through here.
+//!
+//! Timestamps live on the [`CanvasDocument`]'s own `VectorClock` and
+//! travel with it during gossip; no manual syncing needed.
+//!
+//! All mutation methods are synchronous. State lives inside a
+//! [`watch::Sender`] whose `send_modify` runs the closure atomically
+//! without holding a lock across an await point.
+
 use crate::canvas::{CanvasDocument, Rgba};
 use crdt_core::Crdt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, watch, RwLock};
+use tokio::sync::watch;
 use uuid::Uuid;
 
+/// Shared application state, wrapped in `Arc` and passed to all tasks.
+///
+/// The canvas is stored inside a [`watch::Sender`] which is the single
+/// source of truth. Readers obtain a [`watch::Receiver`] via
+/// [`subscribe`](Self::subscribe) and are notified on every change.
 pub struct AppState {
-    pub node_id: Uuid,
-    pub addr: String,
-    pub canvas: RwLock<CanvasDocument>,
-    pub ws_tx: broadcast::Sender<CanvasDocument>,
-    local_tx: watch::Sender<CanvasDocument>,
-    timestamp: AtomicU64,
+    node_id: Uuid,
+    addr: String,
+    canvas: watch::Sender<CanvasDocument>,
 }
 
-const WS_BROADCAST_CAPACITY: usize = 64;
-
 impl AppState {
-    pub fn new(node_id: Uuid, addr: String, local_tx: watch::Sender<CanvasDocument>) -> Arc<Self> {
-        let (ws_tx, _) = broadcast::channel(WS_BROADCAST_CAPACITY);
-        let now = std::time::SystemTime::UNIX_EPOCH
-            .elapsed()
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        Arc::new(Self {
+    pub fn new(node_id: Uuid, addr: String) -> (Arc<Self>, watch::Receiver<CanvasDocument>) {
+        let (tx, rx) = watch::channel(CanvasDocument::new());
+        let state = Arc::new(Self {
             node_id,
             addr,
-            canvas: RwLock::new(CanvasDocument::new()),
-            ws_tx,
-            local_tx,
-            timestamp: AtomicU64::new(now),
-        })
+            canvas: tx,
+        });
+        (state, rx)
     }
 
-    /// Returns a strictly monotonically increasing timestamp.
-    pub fn next_ts(&self) -> u64 {
-        let wall = std::time::SystemTime::UNIX_EPOCH
-            .elapsed()
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        loop {
-            let current = self.timestamp.load(Ordering::Relaxed);
-            let next = wall.max(current) + 1;
-            if self
-                .timestamp
-                .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
-                .is_ok()
-            {
-                return next;
-            }
-        }
+    pub fn node_id(&self) -> Uuid {
+        self.node_id
     }
 
-    pub async fn paint(&self, x: u8, y: u8, color: Rgba) {
-        let ts = self.next_ts();
-        let mut canvas = self.canvas.write().await;
-        canvas.paint(x, y, color, self.node_id, ts);
-        let snapshot = canvas.clone();
-        drop(canvas);
-        let _ = self.local_tx.send(snapshot.clone());
-        let _ = self.ws_tx.send(snapshot);
+    pub fn addr(&self) -> &str {
+        &self.addr
     }
 
-    pub async fn apply_gossip(&self, incoming: CanvasDocument) {
-        let max_ts = incoming.max_pixel_timestamp();
-        let mut canvas = self.canvas.write().await;
-        canvas.merge(incoming);
-        let snapshot = canvas.clone();
-        self.advance_ts(max_ts);
-        drop(canvas);
-        let _ = self.local_tx.send(snapshot.clone());
-        let _ = self.ws_tx.send(snapshot);
+    /// Apply an arbitrary mutation to the canvas.
+    ///
+    /// The closure receives `&mut CanvasDocument` and this node's ID.
+    /// Timestamp handling is internal to the document's `VectorClock`.
+    pub fn mutate<R>(&self, f: impl FnOnce(&mut CanvasDocument, Uuid) -> R) -> R {
+        let mut result = None;
+        self.canvas.send_modify(|doc| {
+            result = Some(f(doc, self.node_id));
+        });
+        // send_modify calls the closure exactly once synchronously before returning
+        result.expect("send_modify did not invoke closure")
     }
 
-    pub async fn add_palette_color(&self, color: Rgba) {
-        let mut canvas = self.canvas.write().await;
-        canvas.add_palette_color(color, &self.node_id);
-        let snap = canvas.clone();
-        drop(canvas);
-        let _ = self.local_tx.send(snap.clone());
-        let _ = self.ws_tx.send(snap);
+    /// Merge a remotely-received document into local state.
+    ///
+    /// The document's `VectorClock` merges as part of `Crdt::merge`,
+    /// so subsequent local writes automatically have higher timestamps
+    /// than anything observed from the remote peer.
+    pub fn apply_gossip(&self, incoming: CanvasDocument) {
+        self.canvas.send_modify(|doc| doc.merge(incoming));
     }
 
-    pub async fn remove_palette_color(&self, color: Rgba) -> bool {
-        let mut canvas = self.canvas.write().await;
-        let removed = canvas.remove_palette_color(&color);
-        if removed {
-            let snap = canvas.clone();
-            drop(canvas);
-            let _ = self.local_tx.send(snap.clone());
-            let _ = self.ws_tx.send(snap);
-        }
-        removed
+    /// Borrow the current canvas state.
+    ///
+    /// Hold the returned guard only briefly; while it is alive, `mutate`
+    /// and `apply_gossip` block. For longer-lived access use [`snapshot`](Self::snapshot).
+    pub fn canvas(&self) -> watch::Ref<'_, CanvasDocument> {
+        self.canvas.borrow()
     }
 
-    pub async fn add_user(&self, user: Uuid) {
-        let mut canvas = self.canvas.write().await;
-        canvas.add_user(user, &self.node_id);
-        let snap = canvas.clone();
-        drop(canvas);
-        let _ = self.local_tx.send(snap.clone());
-        let _ = self.ws_tx.send(snap);
+    /// Clone the current canvas state.
+    pub fn snapshot(&self) -> CanvasDocument {
+        self.canvas.borrow().clone()
     }
 
-    pub async fn remove_user(&self, user: &Uuid) {
-        let mut canvas = self.canvas.write().await;
-        canvas.remove_user(user);
-        let snap = canvas.clone();
-        drop(canvas);
-        let _ = self.local_tx.send(snap.clone());
-        let _ = self.ws_tx.send(snap);
+    /// Obtain a receiver that is notified on every state change.
+    pub fn subscribe(&self) -> watch::Receiver<CanvasDocument> {
+        self.canvas.subscribe()
     }
 
-    fn advance_ts(&self, seen: u64) {
-        loop {
-            let current = self.timestamp.load(Ordering::Relaxed);
-            if seen <= current {
-                break;
-            }
-            if self
-                .timestamp
-                .compare_exchange(current, seen, Ordering::SeqCst, Ordering::Relaxed)
-                .is_ok()
-            {
-                break;
-            }
-        }
+    // Convenience wrappers used by api.rs
+
+    pub fn paint(&self, x: u8, y: u8, color: Rgba) {
+        self.mutate(|doc, id| doc.paint(x, y, color, id));
+    }
+
+    pub fn add_user(&self, user: Uuid) {
+        self.mutate(|doc, id| doc.add_user(user, &id));
+    }
+
+    pub fn remove_user(&self, user: &Uuid) {
+        let user = *user;
+        self.mutate(|doc, _| { doc.remove_user(&user); });
+    }
+
+    pub fn add_palette_color(&self, color: Rgba) {
+        self.mutate(|doc, id| doc.add_palette_color(color, &id));
+    }
+
+    pub fn remove_palette_color(&self, color: Rgba) -> bool {
+        self.mutate(|doc, _| doc.remove_palette_color(&color))
     }
 }
 
@@ -133,40 +114,69 @@ impl AppState {
 mod tests {
     use super::*;
 
-    fn node_id() -> Uuid {
-        Uuid::from_u128(1)
+    fn make() -> (Arc<AppState>, watch::Receiver<CanvasDocument>) {
+        AppState::new(Uuid::from_u128(1), "0.0.0.0:8080".to_string())
     }
 
-    #[tokio::test]
-    async fn paint_updates_canvas() {
-        let (tx, _) = tokio::sync::watch::channel(CanvasDocument::new());
-        let state = AppState::new(node_id(), "0.0.0.0:8080".to_string(), tx);
-        state.paint(1, 2, (255, 0, 0, 255)).await;
-        let canvas = state.canvas.read().await;
-        let pixel = canvas.pixels.get(&(1, 2)).map(|r| r.value());
+    #[test]
+    fn paint_via_mutate() {
+        let (state, rx) = make();
+        state.mutate(|doc, node_id| {
+            doc.paint(1, 2, (255, 0, 0, 255), node_id);
+        });
+        let pixel = rx.borrow().pixels.get(&(1, 2)).map(|r| r.value());
         assert_eq!(pixel, Some((255, 0, 0, 255)));
     }
 
-    #[tokio::test]
-    async fn apply_gossip_merges_state() {
-        let (tx, _) = tokio::sync::watch::channel(CanvasDocument::new());
-        let state = AppState::new(node_id(), "0.0.0.0:8080".to_string(), tx);
+    #[test]
+    fn mutate_returns_value() {
+        let (state, _rx) = make();
+        let result = state.mutate(|_doc, _id| 42);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn apply_gossip_merges() {
+        let (state, rx) = make();
         let mut incoming = CanvasDocument::new();
-        incoming.paint(5, 5, (0, 255, 0, 255), node_id(), 999);
-        state.apply_gossip(incoming).await;
-        let canvas = state.canvas.read().await;
-        let pixel = canvas.pixels.get(&(5, 5)).map(|r| r.value());
+        incoming.paint(5, 5, (0, 255, 0, 255), Uuid::from_u128(2));
+        state.apply_gossip(incoming);
+        let pixel = rx.borrow().pixels.get(&(5, 5)).map(|r| r.value());
         assert_eq!(pixel, Some((0, 255, 0, 255)));
     }
 
-    #[tokio::test]
-    async fn next_ts_is_monotonic() {
-        let (tx, _) = tokio::sync::watch::channel(CanvasDocument::new());
-        let state = AppState::new(node_id(), "0.0.0.0:8080".to_string(), tx);
-        let t1 = state.next_ts();
-        let t2 = state.next_ts();
-        let t3 = state.next_ts();
-        assert!(t1 < t2);
-        assert!(t2 < t3);
+    #[test]
+    fn gossip_merge_advances_clock() {
+        let (state, _rx) = make();
+
+        let mut incoming = CanvasDocument::new();
+        let remote_id = Uuid::from_u128(2);
+        incoming.paint(0, 0, (255, 0, 0, 255), remote_id);
+
+        state.apply_gossip(incoming);
+
+        // Local paint after merging remote state must win.
+        state.mutate(|doc, node_id| {
+            doc.paint(0, 0, (0, 0, 255, 255), node_id);
+        });
+
+        let pixel = state.canvas().pixels.get(&(0, 0)).map(|r| r.value());
+        assert_eq!(pixel, Some((0, 0, 255, 255)));
+    }
+
+    #[test]
+    fn subscribe_sees_changes() {
+        let (state, _rx) = make();
+        let mut watcher = state.subscribe();
+        state.mutate(|doc, id| doc.paint(0, 0, (1, 2, 3, 4), id));
+        assert!(watcher.has_changed().unwrap());
+    }
+
+    #[test]
+    fn paint_convenience_wrapper() {
+        let (state, rx) = make();
+        state.paint(3, 4, (10, 20, 30, 40));
+        let pixel = rx.borrow().pixels.get(&(3, 4)).map(|r| r.value());
+        assert_eq!(pixel, Some((10, 20, 30, 40)));
     }
 }
