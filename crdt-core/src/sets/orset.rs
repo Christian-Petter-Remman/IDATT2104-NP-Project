@@ -13,7 +13,7 @@ use std::hash::Hash;
 /// The (node_id, seq) pair is guaranteed unique across all peers.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Tag {
+pub(crate) struct Tag {
     node_id: NodeId,
     seq: u64,
 }
