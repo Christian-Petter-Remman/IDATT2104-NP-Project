@@ -23,7 +23,6 @@ pub(crate) struct Tag {
 /// Each add creates a unique [`Tag`]. Remove only tombstones tags
 /// that are currently visible. A concurrent add (with an unseen tag)
 /// survives a concurrent remove.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ORSet<T>
 where
@@ -36,6 +35,54 @@ where
     removed_tags: HashSet<Tag>,
     /// Incremented on each insert to generate unique tags
     counter: u64,
+}
+
+#[cfg(feature = "serde")]
+impl<T> serde::Serialize for ORSet<T>
+where
+    T: Eq + std::hash::Hash + Clone + serde::Serialize,
+{
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("ORSet", 3)?;
+        let entries_vec: Vec<(&T, Vec<&Tag>)> = self
+            .entries
+            .iter()
+            .map(|(k, v)| (k, v.iter().collect()))
+            .collect();
+        st.serialize_field("entries", &entries_vec)?;
+        st.serialize_field(
+            "removed_tags",
+            &self.removed_tags.iter().collect::<Vec<_>>(),
+        )?;
+        st.serialize_field("counter", &self.counter)?;
+        st.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T> serde::Deserialize<'de> for ORSet<T>
+where
+    T: Eq + std::hash::Hash + Clone + serde::Deserialize<'de>,
+{
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Helper<T> {
+            entries: Vec<(T, Vec<Tag>)>,
+            removed_tags: Vec<Tag>,
+            counter: u64,
+        }
+        let h = Helper::<T>::deserialize(d)?;
+        Ok(ORSet {
+            entries: h
+                .entries
+                .into_iter()
+                .map(|(k, v)| (k, v.into_iter().collect()))
+                .collect(),
+            removed_tags: h.removed_tags.into_iter().collect(),
+            counter: h.counter,
+        })
+    }
 }
 
 impl<T> Default for ORSet<T>

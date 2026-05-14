@@ -1,24 +1,23 @@
 use crate::canvas::{CanvasDocument, Rgba};
-use crate::gossip::GossipBackend;
 use crdt_core::Crdt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 use uuid::Uuid;
 
-pub struct AppState<G: GossipBackend> {
+pub struct AppState {
     pub node_id: Uuid,
     pub addr: String,
     pub canvas: RwLock<CanvasDocument>,
-    pub gossip: G,
     pub ws_tx: broadcast::Sender<CanvasDocument>,
+    local_tx: watch::Sender<CanvasDocument>,
     timestamp: AtomicU64,
 }
 
 const WS_BROADCAST_CAPACITY: usize = 64;
 
-impl<G: GossipBackend> AppState<G> {
-    pub fn new(node_id: Uuid, addr: String, gossip: G) -> Arc<Self> {
+impl AppState {
+    pub fn new(node_id: Uuid, addr: String, local_tx: watch::Sender<CanvasDocument>) -> Arc<Self> {
         let (ws_tx, _) = broadcast::channel(WS_BROADCAST_CAPACITY);
         let now = std::time::SystemTime::UNIX_EPOCH
             .elapsed()
@@ -28,14 +27,13 @@ impl<G: GossipBackend> AppState<G> {
             node_id,
             addr,
             canvas: RwLock::new(CanvasDocument::new()),
-            gossip,
             ws_tx,
+            local_tx,
             timestamp: AtomicU64::new(now),
         })
     }
 
     /// Returns a strictly monotonically increasing timestamp.
-    /// Tracks wall clock; never goes backwards within a session.
     pub fn next_ts(&self) -> u64 {
         let wall = std::time::SystemTime::UNIX_EPOCH
             .elapsed()
@@ -60,8 +58,8 @@ impl<G: GossipBackend> AppState<G> {
         canvas.paint(x, y, color, self.node_id, ts);
         let snapshot = canvas.clone();
         drop(canvas);
-        let _ = self.ws_tx.send(snapshot.clone());
-        self.gossip.publish(snapshot);
+        let _ = self.local_tx.send(snapshot.clone());
+        let _ = self.ws_tx.send(snapshot);
     }
 
     pub async fn apply_gossip(&self, incoming: CanvasDocument) {
@@ -71,11 +69,28 @@ impl<G: GossipBackend> AppState<G> {
         let snapshot = canvas.clone();
         self.advance_ts(max_ts);
         drop(canvas);
+        let _ = self.local_tx.send(snapshot.clone());
         let _ = self.ws_tx.send(snapshot);
     }
 
-    /// Advances the timestamp counter to at least `seen`, so the next
-    /// local write beats any timestamp we just observed from a remote peer.
+    pub async fn add_palette_color(&self, color: Rgba) {
+        let mut canvas = self.canvas.write().await;
+        canvas.add_palette_color(color, &self.node_id);
+        let snap = canvas.clone();
+        drop(canvas);
+        let _ = self.local_tx.send(snap.clone());
+        let _ = self.ws_tx.send(snap);
+    }
+
+    pub async fn remove_palette_color(&self, color: Rgba) {
+        let mut canvas = self.canvas.write().await;
+        canvas.remove_palette_color(&color);
+        let snap = canvas.clone();
+        drop(canvas);
+        let _ = self.local_tx.send(snap.clone());
+        let _ = self.ws_tx.send(snap);
+    }
+
     fn advance_ts(&self, seen: u64) {
         loop {
             let current = self.timestamp.load(Ordering::Relaxed);
@@ -96,7 +111,6 @@ impl<G: GossipBackend> AppState<G> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gossip::NoopGossip;
 
     fn node_id() -> Uuid {
         Uuid::from_u128(1)
@@ -104,7 +118,8 @@ mod tests {
 
     #[tokio::test]
     async fn paint_updates_canvas() {
-        let state = AppState::new(node_id(), "0.0.0.0:8080".to_string(), NoopGossip::new());
+        let (tx, _) = tokio::sync::watch::channel(CanvasDocument::new());
+        let state = AppState::new(node_id(), "0.0.0.0:8080".to_string(), tx);
         state.paint(1, 2, (255, 0, 0, 255)).await;
         let canvas = state.canvas.read().await;
         let pixel = canvas.pixels.get(&(1, 2)).map(|r| r.value());
@@ -113,7 +128,8 @@ mod tests {
 
     #[tokio::test]
     async fn apply_gossip_merges_state() {
-        let state = AppState::new(node_id(), "0.0.0.0:8080".to_string(), NoopGossip::new());
+        let (tx, _) = tokio::sync::watch::channel(CanvasDocument::new());
+        let state = AppState::new(node_id(), "0.0.0.0:8080".to_string(), tx);
         let mut incoming = CanvasDocument::new();
         incoming.paint(5, 5, (0, 255, 0, 255), node_id(), 999);
         state.apply_gossip(incoming).await;
@@ -124,7 +140,8 @@ mod tests {
 
     #[tokio::test]
     async fn next_ts_is_monotonic() {
-        let state = AppState::new(node_id(), "0.0.0.0:8080".to_string(), NoopGossip::new());
+        let (tx, _) = tokio::sync::watch::channel(CanvasDocument::new());
+        let state = AppState::new(node_id(), "0.0.0.0:8080".to_string(), tx);
         let t1 = state.next_ts();
         let t2 = state.next_ts();
         let t3 = state.next_ts();

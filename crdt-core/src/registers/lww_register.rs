@@ -38,6 +38,10 @@ impl<T: Clone + PartialEq> LWWRegister<T> {
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
+
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
 }
 
 impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {

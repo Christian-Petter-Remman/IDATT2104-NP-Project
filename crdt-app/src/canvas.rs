@@ -1,3 +1,4 @@
+use crdt_core::counters::GCounter;
 use crdt_core::registers::lww_register::LWWRegister;
 use crdt_core::sets::ORSet;
 use crdt_core::traits::{Crdt, NodeId};
@@ -11,15 +12,40 @@ pub type Rgba = (u8, u8, u8, u8);
 pub type PixelCoord = (u8, u8);
 pub const DEFAULT_PIXEL: Rgba = (255, 255, 255, 255);
 
+mod pixel_map_serde {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(
+        map: &HashMap<PixelCoord, LWWRegister<Rgba>>,
+        s: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D>(
+        d: D,
+    ) -> Result<HashMap<PixelCoord, LWWRegister<Rgba>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<(PixelCoord, LWWRegister<Rgba>)>::deserialize(d)
+            .map(|v| v.into_iter().collect())
+    }
+}
+
 /// Composite CRDT — the shared state gossiped between nodes.
-///
-/// Pixels + cursors use LWWRegister (last-writer-wins).
-/// Users use ORSet (concurrent-add-wins).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CanvasDocument {
+    #[serde(with = "pixel_map_serde")]
     pub pixels: HashMap<PixelCoord, LWWRegister<Rgba>>,
     users: ORSet<Uuid>,
     pub cursors: HashMap<Uuid, LWWRegister<PixelCoord>>,
+    pub palette: ORSet<Rgba>,
+    pub paint_counts: GCounter,
 }
 
 impl Default for CanvasDocument {
@@ -28,6 +54,8 @@ impl Default for CanvasDocument {
             pixels: HashMap::new(),
             users: ORSet::new(),
             cursors: HashMap::new(),
+            palette: ORSet::new(),
+            paint_counts: GCounter::new(),
         }
     }
 }
@@ -42,12 +70,15 @@ impl CanvasDocument {
             .entry((x, y))
             .or_insert_with(|| LWWRegister::new(DEFAULT_PIXEL, 0, node_id))
             .set(color, timestamp, node_id);
+        self.paint_counts.increment(node_id);
     }
 
+    #[allow(dead_code)]
     pub fn add_user(&mut self, user: Uuid, node_id: &NodeId) {
         self.users.insert(user, node_id);
     }
 
+    #[allow(dead_code)]
     pub fn remove_user(&mut self, user: &Uuid) -> bool {
         self.users.remove(user)
     }
@@ -64,7 +95,29 @@ impl CanvasDocument {
             .unwrap_or(0)
     }
 
-    // TODO: wire cursor updates via API once crdt-net gossip is integrated
+    pub fn add_palette_color(&mut self, color: Rgba, node_id: &NodeId) {
+        self.palette.insert(color, node_id);
+    }
+
+    pub fn remove_palette_color(&mut self, color: &Rgba) -> bool {
+        self.palette.remove(color)
+    }
+
+    pub fn palette_colors(&self) -> Vec<Rgba> {
+        let mut colors: Vec<Rgba> = self.palette.value().into_iter().collect();
+        colors.sort();
+        colors
+    }
+
+    pub fn ownership_leaderboard(&self) -> Vec<(NodeId, u64)> {
+        let mut counts: HashMap<NodeId, u64> = HashMap::new();
+        for reg in self.pixels.values() {
+            *counts.entry(reg.node_id()).or_insert(0) += 1;
+        }
+        let mut result: Vec<(NodeId, u64)> = counts.into_iter().collect();
+        result.sort_by_key(|b| std::cmp::Reverse(b.1));
+        result
+    }
 }
 
 impl Crdt for CanvasDocument {
@@ -92,6 +145,8 @@ impl Crdt for CanvasDocument {
                 }
             }
         }
+        self.palette.merge(other.palette);
+        self.paint_counts.merge(other.paint_counts);
     }
 
     fn compare(&self, other: &Self) -> bool {
@@ -103,6 +158,8 @@ impl Crdt for CanvasDocument {
                 .iter()
                 .all(|(k, r)| other.cursors.get(k).is_some_and(|o| r.compare(o)))
             && self.users.compare(&other.users)
+            && self.palette.compare(&other.palette)
+            && self.paint_counts.compare(&other.paint_counts)
     }
 }
 
@@ -110,13 +167,23 @@ impl Crdt for CanvasDocument {
 #[derive(Serialize)]
 pub struct CanvasView {
     pub pixels: HashMap<String, [u8; 4]>,
-    pub users: Vec<String>,
+    pub active_peers: Vec<String>,
+    pub palette: Vec<[u8; 4]>,
+    pub paint_total: u64,
+    pub leaderboard: Vec<LeaderboardEntry>,
+}
+
+#[derive(Serialize)]
+pub struct LeaderboardEntry {
+    pub peer_id: String,
+    pub pixels: u64,
 }
 
 impl From<&CanvasDocument> for CanvasView {
     fn from(doc: &CanvasDocument) -> Self {
-        let mut users: Vec<String> = doc.active_users().iter().map(|u| u.to_string()).collect();
-        users.sort();
+        let mut active_peers: Vec<String> =
+            doc.active_users().iter().map(|u| u.to_string()).collect();
+        active_peers.sort();
         Self {
             pixels: doc
                 .pixels
@@ -126,7 +193,21 @@ impl From<&CanvasDocument> for CanvasView {
                     (format!("{x},{y}"), [a, b, c, d])
                 })
                 .collect(),
-            users,
+            active_peers,
+            palette: doc
+                .palette_colors()
+                .into_iter()
+                .map(|(r, g, b, a)| [r, g, b, a])
+                .collect(),
+            paint_total: doc.paint_counts.value(),
+            leaderboard: doc
+                .ownership_leaderboard()
+                .into_iter()
+                .map(|(id, n)| LeaderboardEntry {
+                    peer_id: id.to_string(),
+                    pixels: n,
+                })
+                .collect(),
         }
     }
 }
@@ -210,5 +291,24 @@ mod tests {
         let mut b1 = peer_b.clone();
         b1.merge(peer_a.clone());
         assert!(b1.active_users().contains(&user));
+    }
+
+    #[test]
+    fn palette_add_and_colors() {
+        let mut d = CanvasDocument::new();
+        d.add_palette_color((255, 0, 0, 255), &node(1));
+        d.add_palette_color((0, 255, 0, 255), &node(1));
+        let colors = d.palette_colors();
+        assert_eq!(colors.len(), 2);
+        assert!(colors.contains(&(255, 0, 0, 255)));
+        assert!(colors.contains(&(0, 255, 0, 255)));
+    }
+
+    #[test]
+    fn paint_increments_paint_total() {
+        let mut d = CanvasDocument::new();
+        d.paint(0, 0, (1, 2, 3, 4), node(1), 1);
+        d.paint(1, 1, (5, 6, 7, 8), node(1), 2);
+        assert_eq!(d.paint_counts.value(), 2);
     }
 }
