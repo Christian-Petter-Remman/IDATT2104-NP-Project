@@ -1,45 +1,72 @@
 mod api;
 mod canvas;
-mod gossip;
 mod state;
 
-use gossip::{GossipBackend, NoopGossip};
+use canvas::CanvasDocument;
+use crdt_net::{GossipConfig, GossipEngine};
 use state::AppState;
 use std::sync::Arc;
+use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
+
+#[derive(clap::Parser)]
+struct Args {
+    #[arg(long, default_value_t = 8080)]
+    port: u16,
+    #[arg(long, default_value_t = 9090)]
+    gossip_port: u16,
+    /// Comma-separated bootstrap peers, e.g. 127.0.0.1:9091,127.0.0.1:9092
+    #[arg(long, default_value = "")]
+    peers: String,
+}
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
-
+    let args = <Args as clap::Parser>::parse();
     let node_id = Uuid::new_v4();
+    let http_addr = format!("0.0.0.0:{}", args.port);
 
-    let port: u16 = std::env::args()
-        .position(|a| a == "--port")
-        .and_then(|i| std::env::args().nth(i + 1))
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8080);
+    let bootstrap: Vec<std::net::SocketAddr> = args
+        .peers
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| {
+            s.parse()
+                .map_err(|_| tracing::warn!("invalid peer address ignored: {s}"))
+                .ok()
+        })
+        .collect();
 
-    let addr = format!("0.0.0.0:{port}");
-    let state = AppState::new(node_id, addr.clone(), NoopGossip::new());
+    let (local_tx, local_rx) = watch::channel(CanvasDocument::new());
+    let (merged_tx, _) = broadcast::channel::<CanvasDocument>(64);
 
-    // TODO: replace NoopGossip with crdt-net's GossipEngine once available.
-    // GossipEngine must implement GossipBackend (see gossip.rs).
+    let gossip_addr: std::net::SocketAddr =
+        format!("0.0.0.0:{}", args.gossip_port).parse().unwrap();
+    let config = GossipConfig::new(node_id, gossip_addr)
+        .with_peers(bootstrap)
+        .with_mdns(false);
+
+    let _engine = GossipEngine::run(config, local_rx, merged_tx.clone())
+        .await
+        .expect("gossip engine failed to start");
+
+    let state = AppState::new(node_id, http_addr.clone(), local_tx);
 
     let state_clone = Arc::clone(&state);
-    let _gossip_handle = tokio::spawn(async move {
-        let mut rx = state_clone.gossip.subscribe();
-        while let Ok(incoming) = rx.recv().await {
+    let mut merged_rx = merged_tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(incoming) = merged_rx.recv().await {
             state_clone.apply_gossip(incoming).await;
         }
         tracing::warn!("gossip listener exited");
     });
 
-    tracing::info!("node {} listening on {}", node_id, addr);
+    tracing::info!("node {} http={} gossip={}", node_id, http_addr, gossip_addr);
 
-    let listener = tokio::net::TcpListener::bind(&addr)
+    let listener = tokio::net::TcpListener::bind(&http_addr)
         .await
-        .expect("failed to bind to address");
+        .expect("failed to bind");
     axum::serve(listener, api::router(state))
         .await
         .expect("server error");

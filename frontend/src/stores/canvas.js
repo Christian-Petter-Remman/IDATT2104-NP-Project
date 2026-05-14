@@ -90,9 +90,9 @@ export const useCanvasStore = defineStore('canvas', {
         this.palette.add(JSON.stringify(color))
       }
 
-      // users: [uuid, ...]
+      // active_peers: [uuid, ...]
       this.activePeers.clear()
-      for (const peer of (msg.users ?? [])) {
+      for (const peer of (msg.active_peers ?? msg.users ?? [])) {
         this.activePeers.add(peer)
       }
 
