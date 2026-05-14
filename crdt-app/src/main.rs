@@ -44,7 +44,7 @@ async fn main() {
         format!("0.0.0.0:{}", args.gossip_port).parse().unwrap();
     let config = GossipConfig::new(node_id, gossip_addr)
         .with_peers(bootstrap)
-        .with_mdns(false);
+        .with_mdns(true);
 
     let _engine = GossipEngine::run(config, local_rx, merged_tx.clone())
         .await
