@@ -73,7 +73,7 @@ async fn handle_ws<G: GossipBackend + Clone>(
             return;
         };
         if socket
-            .send(axum::extract::ws::Message::Text(msg.into()))
+            .send(axum::extract::ws::Message::Text(msg))
             .await
             .is_err()
         {
@@ -89,7 +89,7 @@ async fn handle_ws<G: GossipBackend + Clone>(
                     break;
                 };
                 if socket
-                    .send(axum::extract::ws::Message::Text(msg.into()))
+                    .send(axum::extract::ws::Message::Text(msg))
                     .await
                     .is_err()
                 {

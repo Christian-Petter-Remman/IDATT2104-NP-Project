@@ -97,11 +97,11 @@ impl Crdt for CanvasDocument {
     fn compare(&self, other: &Self) -> bool {
         self.pixels
             .iter()
-            .all(|(k, r)| other.pixels.get(k).map_or(false, |o| r.compare(o)))
+            .all(|(k, r)| other.pixels.get(k).is_some_and(|o| r.compare(o)))
             && self
                 .cursors
                 .iter()
-                .all(|(k, r)| other.cursors.get(k).map_or(false, |o| r.compare(o)))
+                .all(|(k, r)| other.cursors.get(k).is_some_and(|o| r.compare(o)))
             && self.users.compare(&other.users)
     }
 }
