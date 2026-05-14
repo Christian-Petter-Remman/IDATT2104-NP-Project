@@ -16,40 +16,43 @@ Multiple nodes sync automatically — paint on one, see it appear on another aft
 - Rust (stable, 2021 edition) — https://rustup.rs
 - Node.js 18+ and npm
 
-## Running a single node
+## Running
 
-**Terminal 1 — backend:**
-```
-cargo run -p crdt-app -- --port 8080 --gossip-port 9090
-```
+From the repo root:
 
-**Terminal 2 — frontend:**
 ```
-cd frontend
-npm install   # only needed the first time
-npm run dev
+npm run setup   # first time only — installs all dependencies
+npm run dev     # starts backend and frontend together
 ```
 
-Open http://localhost:5173 in a browser. The UI asks for an API port on first load — enter `8080` and click Connect.
+Open http://localhost:5173. The canvas loads automatically once the backend is ready (first compile takes ~30–60s).
 
-## Running two nodes (gossip demo)
+To run processes separately:
 
-**Terminal 1:**
 ```
-cargo run -p crdt-app -- --port 8080 --gossip-port 9090 --peers 127.0.0.1:9091
-```
-
-**Terminal 2:**
-```
-cargo run -p crdt-app -- --port 8081 --gossip-port 9091 --peers 127.0.0.1:9090
+npm run dev:backend    # cargo run -p crdt-app (port 8080, gossip port 9090)
+npm run dev:frontend   # Vite dev server (port 5173)
 ```
 
-**Terminal 3 — frontend:**
+## LAN multiplayer
+
+Nodes on the same network discover each other automatically via mDNS — no configuration needed. Each machine runs `npm run dev` independently and peers connect within ~5 seconds.
+
+If mDNS is unavailable (e.g. on a university network), specify peers manually:
+
 ```
-cd frontend && npm run dev
+npm run dev:backend -- --peers 192.168.x.x:9090
 ```
 
-Open http://localhost:5173 in **two browser tabs**. In tab 1 enter port `8080`, in tab 2 enter port `8081`. Paint on one — it propagates to the other within ~5 seconds.
+## Two nodes on one machine
+
+```
+npm run dev:backend -- --port 8080 --gossip-port 9090 --peers 127.0.0.1:9091
+npm run dev:backend -- --port 8081 --gossip-port 9091 --peers 127.0.0.1:9090
+npm run dev:frontend
+```
+
+Open http://localhost:5173 in two browser tabs. The UI auto-connects to port 8080; change the port field to `8081` in the second tab and click Connect.
 
 ## CLI flags
 
