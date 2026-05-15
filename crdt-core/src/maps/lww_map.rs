@@ -5,10 +5,10 @@
 //! timestamp, with node_id as tiebreaker.
 //! Internally composed of [`LWWRegister`]s, same pattern
 //! as [`TwoPSet`] composing two [`GSet`]s.
+use crate::registers::LWWRegister;
+use crate::traits::{Crdt, NodeId};
 use std::collections::HashMap;
 use std::hash::Hash;
-use crate::traits::{Crdt, NodeId};
-use crate::registers::LWWRegister;
 
 /// A map where each key independently resolves conflicts
 /// using last-writer-wins.
@@ -58,7 +58,6 @@ where
         Self::default()
     }
 
-
     /// Sets a key to a value at the given timestamp.
     ///
     /// If the key already exists, the write is forwarded to its
@@ -71,7 +70,8 @@ where
         match self.entries.get_mut(&key) {
             Some(register) => register.set(value, timestamp, node_id),
             None => {
-                self.entries.insert(key, LWWRegister::new(value, timestamp, node_id));
+                self.entries
+                    .insert(key, LWWRegister::new(value, timestamp, node_id));
                 true
             }
         }
@@ -97,7 +97,8 @@ where
 
     /// Returns a snapshot of all keys and their current values.
     fn value(&self) -> Self::Value {
-        self.entries.iter()
+        self.entries
+            .iter()
             .map(|(k, r)| (k.clone(), r.value()))
             .collect()
     }
@@ -105,12 +106,12 @@ where
     /// Returns `true` if every key in `self` exists in `other`
     /// and each register is dominated by or equal to other's.
     fn compare(&self, other: &Self) -> bool {
-        self.entries.iter().all(|(key, reg)| {
-            match other.entries.get(key) {
+        self.entries
+            .iter()
+            .all(|(key, reg)| match other.entries.get(key) {
                 Some(other_reg) => reg.compare(other_reg),
                 None => false,
-            }
-        })
+            })
     }
 
     /// Merges by merging each register independently.
@@ -119,7 +120,9 @@ where
         for (key, other_reg) in other.entries {
             match self.entries.get_mut(&key) {
                 Some(local_reg) => local_reg.merge(other_reg),
-                None => { self.entries.insert(key, other_reg); }
+                None => {
+                    self.entries.insert(key, other_reg);
+                }
             }
         }
     }

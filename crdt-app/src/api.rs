@@ -212,19 +212,14 @@ async fn ws_handler(
     Query(q): Query<WsQuery>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    let user_id = q
-        .id
-        .as_deref()
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or_else(Uuid::new_v4);
+    let user_id =
+        q.id.as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .unwrap_or_else(Uuid::new_v4);
     ws.on_upgrade(move |socket| handle_ws(socket, s, user_id))
 }
 
-async fn handle_ws(
-    mut socket: axum::extract::ws::WebSocket,
-    state: Arc<AppState>,
-    user_id: Uuid,
-) {
+async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, user_id: Uuid) {
     state.add_user(user_id);
 
     // Send an initial full snapshot and remember the version it covers.
