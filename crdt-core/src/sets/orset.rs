@@ -262,9 +262,8 @@ where
     }
 
     fn delta_since(&self, since: &Self::Version) -> Self::Delta {
-        let exceeds = |tag: &Tag| -> bool {
-            tag.seq > since.get(&tag.node_id).copied().unwrap_or(0)
-        };
+        let exceeds =
+            |tag: &Tag| -> bool { tag.seq > since.get(&tag.node_id).copied().unwrap_or(0) };
         let mut adds: Vec<(T, Tag)> = Vec::new();
         for (elem, tags) in &self.entries {
             for tag in tags {
@@ -474,6 +473,54 @@ mod tests {
         assert!(small.compare(&big));
         assert!(!big.compare(&small));
     }
+
+    /// After a peer has absorbed a tombstone, subsequent deltas computed
+    /// against the post-removal version must omit that tombstone. Without
+    /// the filter, `removed_tags` would re-ship forever and
+    /// `is_empty_delta` would never return true again.
+    #[test]
+    fn delta_omits_already_seen_tombstones() {
+        let a = node(1);
+        let mut sender = ORSet::new();
+        sender.insert("milk", &a, 1);
+        sender.remove(&"milk");
+        // Tombstone now exists in `removed_tags` with seq=1.
+
+        let post_removal_version = sender.version();
+        let delta = sender.delta_since(&post_removal_version);
+        assert!(
+            delta.adds.is_empty(),
+            "no new adds since post-removal version"
+        );
+        assert!(
+            delta.removed_tags.is_empty(),
+            "tombstone already known at the post-removal version must be filtered out"
+        );
+        assert!(<ORSet<&str> as DeltaCrdt>::is_empty_delta(&delta));
+    }
+
+    /// A delta computed against an empty version must still carry the
+    /// tombstone, so a fresh receiver learns about removals.
+    #[test]
+    fn delta_includes_tombstones_for_fresh_receiver() {
+        let a = node(1);
+        let mut sender = ORSet::new();
+        sender.insert("milk", &a, 1);
+        sender.remove(&"milk");
+
+        let delta = sender.delta_since(&HashMap::new());
+        assert_eq!(delta.removed_tags.len(), 1, "fresh receiver gets tombstone");
+
+        // Apply to a fresh replica and verify tombstone propagated.
+        let mut receiver: ORSet<&str> = ORSet::new();
+        receiver.merge_delta(delta);
+        assert!(!receiver.contains(&"milk"));
+        assert!(receiver
+            .removed_tags
+            .iter()
+            .any(|t| t.node_id == a && t.seq == 1));
+    }
+
     proptest! {
         #[test]
         fn orset_commutative(a in arb_orset(), b in arb_orset()) {

@@ -101,6 +101,12 @@ impl DeltaCrdt for Counter {
     fn is_empty_delta(delta: &Self::Delta) -> bool {
         delta.is_empty()
     }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        other
+            .iter()
+            .all(|(k, v)| current.get(k).copied().unwrap_or(0) >= *v)
+    }
 }
 
 struct Args {

@@ -547,10 +547,31 @@ async fn handle_connection<T>(
         Ok(Ok(GossipMessage::SyncDelta {
             from,
             delta,
-            since: _,
+            since,
             known_peers,
             departed,
         })) => {
+            // Decode the sender's baseline first. If our local state is
+            // not at least as advanced as that baseline, the delta was
+            // computed against state we never had — applying it would
+            // silently miss intervening updates. Drop and wait for the
+            // sender's next periodic full `Sync` to catch us up.
+            let typed_since: T::Version = match serde_json::from_value(since) {
+                Ok(v) => v,
+                Err(e) => {
+                    trace!(error = %e, %peer, "discarding SyncDelta with malformed `since`");
+                    return;
+                }
+            };
+            let local_value = local.borrow().clone();
+            if !T::version_includes(&local_value.version(), &typed_since) {
+                trace!(
+                    %peer,
+                    sender = %from.node_id,
+                    "dropping SyncDelta — local state behind sender's baseline, waiting for full Sync"
+                );
+                return;
+            }
             // Decode the typed delta. A type mismatch surfaces as a
             // decode error and we drop the frame — the sender's next
             // tick falls back to a full `Sync` automatically once the
@@ -568,7 +589,7 @@ async fn handle_connection<T>(
             for entry in known_peers {
                 registry.add_resolved(entry.node_id, entry.addr);
             }
-            let mut merged_value = local.borrow().clone();
+            let mut merged_value = local_value;
             merged_value.merge_delta(typed_delta);
             let _ = merged.send(merged_value);
         }
@@ -639,9 +660,18 @@ fn spawn_ticker<T>(
                             .and_then(|v| serde_json::from_value(v).ok());
                         let mode = match prev_version {
                             None => SendMode::Full(snapshot.clone()),
+                            // Ship the *receiver's prior baseline* (`prev`)
+                            // as `since`. The receiver uses this to verify
+                            // its local state already includes the
+                            // baseline before applying the delta — if not,
+                            // it drops the frame and waits for a full
+                            // `Sync`. Shipping `current_version` here
+                            // (sender's new state) would always fail that
+                            // check whenever the sender pulled ahead,
+                            // which is precisely when deltas matter.
                             Some(prev) => SendMode::Delta(
                                 snapshot.delta_since(&prev),
-                                current_version.clone(),
+                                prev.clone(),
                             ),
                         };
 

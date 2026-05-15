@@ -61,9 +61,11 @@ async fn main() {
         .with_interval(Duration::from_millis(args.gossip_interval_ms))
         .with_mdns(true);
 
-    let _engine = GossipEngine::run(config, local_rx, merged_tx.clone())
-        .await
-        .expect("gossip engine failed to start");
+    let engine = Arc::new(
+        GossipEngine::run(config, local_rx, merged_tx.clone())
+            .await
+            .expect("gossip engine failed to start"),
+    );
 
     let state_clone = Arc::clone(&state);
     let mut merged_rx = merged_tx.subscribe();
@@ -74,6 +76,19 @@ async fn main() {
         tracing::warn!("gossip listener exited");
     });
 
+    // On ctrl-c, send a `Goodbye` so surviving peers learn we left
+    // immediately instead of waiting ~3s for failure-detection to fire.
+    // Without this, every disconnect goes through the slow path that
+    // logs `gossip send failed` bursts on the surviving terminals.
+    let engine_for_signal = Arc::clone(&engine);
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::info!("ctrl-c received, sending Goodbye");
+            engine_for_signal.graceful_shutdown().await;
+            std::process::exit(0);
+        }
+    });
+
     tracing::info!("node {} http={} gossip={}", node_id, http_addr, gossip_addr);
 
     let listener = tokio::net::TcpListener::bind(&http_addr)
@@ -82,4 +97,6 @@ async fn main() {
     axum::serve(listener, api::router(state))
         .await
         .expect("server error");
+
+    drop(engine);
 }

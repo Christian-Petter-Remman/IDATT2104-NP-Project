@@ -54,15 +54,16 @@ export const useCanvasStore = defineStore('canvas', {
 
       _ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data)
-        // Backend wraps state in `{type, payload}`; `?? msg` keeps the
-        // client tolerant of older un-wrapped frames.
+        // Backend wraps state in `{type, payload}`.
         const data = msg.payload ?? msg
         if (msg.type === 'snapshot') {
           this._applySnapshot(data)
         } else if (msg.type === 'delta') {
           this._applyDelta(data)
         } else {
-          this._applySnapshot(data)
+          // Unknown type: don't silently apply as a snapshot — that
+          // masked decode errors and stale frames in earlier versions.
+          console.warn('[canvas] dropped WS message with unknown type:', msg.type)
         }
       }
 

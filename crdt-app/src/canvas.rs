@@ -667,4 +667,45 @@ mod tests {
         assert!(b.palette_colors().contains(&(5, 6, 7, 8)));
         assert!(!b.palette_colors().contains(&(1, 2, 3, 4)));
     }
+
+    /// Regression: after any palette removal, `is_empty_delta` was
+    /// permanently false because `ORSet::delta_since` shipped the full
+    /// tombstone set every time. That silently disabled the WS skip in
+    /// `api.rs::handle_ws`. Verify the skip is active again.
+    #[test]
+    fn idle_delta_after_palette_removal_is_empty() {
+        let mut a = CanvasDocument::new();
+        a.add_palette_color((1, 2, 3, 4), &node(1));
+        a.remove_palette_color(&(1, 2, 3, 4));
+
+        // Re-querying at the post-removal version must produce an empty
+        // delta — nothing has happened since.
+        let delta = a.delta_since(&a.version());
+        assert!(
+            CanvasDocument::is_empty_delta(&delta),
+            "idle delta after tombstone must be empty so WS skip fires"
+        );
+    }
+
+    /// `version_includes` powers the partition-heal drop in the gossip
+    /// engine: a delta is only safe to apply when the receiver's state
+    /// already knows everything the sender's `since` baseline asserts.
+    #[test]
+    fn version_includes_detects_lagging_receiver() {
+        let mut sender = CanvasDocument::new();
+        sender.paint(0, 0, (1, 2, 3, 4), node(1));
+        sender.paint(1, 1, (5, 6, 7, 8), node(1));
+
+        let fresh_receiver_version = CanvasDocument::new().version();
+        assert!(
+            !CanvasDocument::version_includes(&fresh_receiver_version, &sender.version()),
+            "fresh receiver must NOT include sender's advanced baseline"
+        );
+
+        let caught_up_receiver = sender.clone();
+        assert!(
+            CanvasDocument::version_includes(&caught_up_receiver.version(), &sender.version()),
+            "caught-up receiver MUST include sender's baseline"
+        );
+    }
 }
