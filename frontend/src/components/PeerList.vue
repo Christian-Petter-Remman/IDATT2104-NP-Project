@@ -44,10 +44,15 @@ const connectMsg = ref('')
 async function connect() {
   const addr = peerAddr.value.trim()
   if (!addr) return
-  const ok = await store.bootstrap(addr)
-  connectStatus.value = ok ? 'ok' : 'err'
-  connectMsg.value = ok ? 'Connecting…' : 'Invalid address'
-  if (ok) peerAddr.value = ''
+  const result = await store.bootstrap(addr)
+  if (result === 'ok') {
+    connectStatus.value = 'ok'
+    connectMsg.value = 'Submitted'
+    peerAddr.value = ''
+  } else {
+    connectStatus.value = 'err'
+    connectMsg.value = result === 'network-error' ? 'Server unreachable' : 'Invalid address'
+  }
   setTimeout(() => { connectMsg.value = ''; connectStatus.value = '' }, 2000)
 }
 </script>

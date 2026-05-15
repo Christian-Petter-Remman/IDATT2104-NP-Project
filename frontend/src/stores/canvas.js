@@ -185,13 +185,18 @@ export const useCanvasStore = defineStore('canvas', {
     },
 
     // Add a bootstrap peer to the gossip engine at runtime.
+    // Returns 'ok', 'bad-address', or 'network-error'.
     async bootstrap(addr) {
-      const res = await fetch(`${_apiBase}/api/peers`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ addr }),
-      }).catch(() => null)
-      return res?.ok ?? false
+      try {
+        const res = await fetch(`${_apiBase}/api/peers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ addr }),
+        })
+        return res.ok ? 'ok' : 'bad-address'
+      } catch {
+        return 'network-error'
+      }
     },
 
     // Remove a color from the shared palette.

@@ -187,7 +187,7 @@ async fn get_leaderboard(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 
 /// `POST /api/peers` — add a bootstrap peer to the gossip engine at runtime.
 ///
-/// Body: `{"addr": "192.168.x.x:9090"}`. Returns 204 on success, 400 if the
+/// Body: `{"addr": "192.168.1.10:9090"}`. Returns 204 on success, 400 if the
 /// address cannot be parsed as a `SocketAddr`.
 async fn add_peer(
     State(s): State<Arc<AppState>>,
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_peers_valid_addr_returns_no_content() {
+    async fn post_peers_valid_addr_format_returns_no_content() {
         let app = make_app();
         let req = Request::builder()
             .method("POST")
