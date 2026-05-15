@@ -111,8 +111,9 @@ impl CanvasDocument {
         self.users.insert(user, node_id, seq);
     }
 
-    /// Remove a peer from the active set.
+    /// Remove a peer from the active set and evict their cursor.
     pub fn remove_user(&mut self, user: &Uuid) -> bool {
+        self.cursors.remove(user);
         self.users.remove(user)
     }
 
@@ -420,14 +421,17 @@ impl From<&CanvasDocument> for CanvasView {
                     pixels: n,
                 })
                 .collect(),
-            cursors: doc
-                .cursors
-                .iter()
-                .map(|(uid, reg)| {
-                    let (x, y) = reg.value();
-                    (uid.to_string(), [x, y])
-                })
-                .collect(),
+            cursors: {
+                let active = doc.active_users();
+                doc.cursors
+                    .iter()
+                    .filter(|(uid, _)| active.contains(*uid))
+                    .map(|(uid, reg)| {
+                        let (x, y) = reg.value();
+                        (uid.to_string(), [x, y])
+                    })
+                    .collect()
+            },
         }
     }
 }

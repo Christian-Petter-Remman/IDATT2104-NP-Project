@@ -62,7 +62,7 @@ export const useCanvasStore = defineStore('canvas', {
       _ws = null
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = _apiBase ? new URL(_apiBase).host : location.host
-      _ws = new WebSocket(`${proto}//${host}/ws`)
+      _ws = new WebSocket(`${proto}//${host}/ws?id=${_storedClientId}`)
 
       _ws.onopen = () => {
         this.connected = true

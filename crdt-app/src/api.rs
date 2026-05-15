@@ -2,7 +2,7 @@ use crate::canvas::{CanvasDeltaView, CanvasDocument, CanvasView, LeaderboardEntr
 use crate::state::AppState;
 use axum::{
     body::Body,
-    extract::{ws::WebSocketUpgrade, State},
+    extract::{ws::WebSocketUpgrade, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -11,6 +11,11 @@ use axum::{
 use crdt_core::DeltaCrdt;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct WsQuery {
+    id: Option<String>,
+}
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
@@ -108,6 +113,9 @@ async fn node_info(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 /// `POST /api/canvas/cursor` — update the cursor position for a user.
+///
+/// `user_id` is taken from the request body without authentication; any client
+/// can move any cursor. Acceptable for this project scope (no auth layer).
 async fn cursor(
     State(s): State<Arc<AppState>>,
     Json(req): Json<CursorRequest>,
@@ -195,12 +203,28 @@ async fn static_handler(uri: axum::http::Uri) -> Response {
 }
 
 /// `GET /ws` — upgrade to a WebSocket connection and hand off to [`handle_ws`].
-async fn ws_handler(State(s): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, s))
+///
+/// Accepts an optional `?id=<uuid>` query parameter. The frontend passes its
+/// stable `sessionStorage` UUID so that cursor keys and `active_peers` UUIDs
+/// share the same namespace. Falls back to a fresh UUID when absent or invalid.
+async fn ws_handler(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<WsQuery>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let user_id = q
+        .id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .unwrap_or_else(Uuid::new_v4);
+    ws.on_upgrade(move |socket| handle_ws(socket, s, user_id))
 }
 
-async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>) {
-    let user_id = Uuid::new_v4();
+async fn handle_ws(
+    mut socket: axum::extract::ws::WebSocket,
+    state: Arc<AppState>,
+    user_id: Uuid,
+) {
     state.add_user(user_id);
 
     // Send an initial full snapshot and remember the version it covers.
