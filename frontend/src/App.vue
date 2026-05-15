@@ -4,12 +4,8 @@
       Reconnecting to node...
     </div>
 
-    <div v-if="!store.nodeId" class="port-config">
-      <label>
-        API Port:
-        <input v-model.number="portInput" type="number" class="port-input" />
-      </label>
-      <button class="connect-btn" @click="init">Connect</button>
+    <div v-if="!store.nodeId" class="connecting">
+      Connecting...
     </div>
 
     <div v-else class="layout">
@@ -29,7 +25,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { onMounted } from 'vue'
 import { useCanvasStore } from './stores/canvas.js'
 import NodeInfo from './components/NodeInfo.vue'
 import PixelCanvas from './components/PixelCanvas.vue'
@@ -47,6 +43,7 @@ const portInput = ref(Number.isFinite(urlPort) && urlPort > 0 ? urlPort : 8080)
 function init() {
   store.init(portInput.value)
 }
+
 
 onMounted(() => store.init(portInput.value))
 </script>
@@ -74,34 +71,13 @@ body {
   font-weight: bold;
 }
 
-.port-config {
+.connecting {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 40px;
+  justify-content: center;
+  height: 100vh;
   font-size: 14px;
-}
-.port-input {
-  background: #1a1a1a;
-  border: 1px solid #333;
-  color: #e0e0e0;
-  padding: 4px 8px;
-  font-family: 'Courier New', monospace;
-  width: 80px;
-  margin-left: 6px;
-  border-radius: 2px;
-}
-.connect-btn {
-  background: #2a2a2a;
-  border: 1px solid #4af;
-  color: #4af;
-  padding: 4px 14px;
-  cursor: pointer;
-  border-radius: 2px;
-  font-family: 'Courier New', monospace;
-}
-.connect-btn:hover {
-  background: #1a3040;
+  color: #666;
 }
 
 .layout {

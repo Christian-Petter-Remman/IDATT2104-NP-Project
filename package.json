@@ -1,0 +1,14 @@
+{
+  "name": "idatt2104-np-project",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names \"backend,frontend\" --prefix-colors \"cyan,magenta\" \"cargo run -p crdt-app\" \"npm run dev --prefix frontend\"",
+    "dev:backend": "cargo run -p crdt-app",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "setup": "npm install && npm install --prefix frontend",
+    "build": "npm run build --prefix frontend && cargo build --release -p crdt-app"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
