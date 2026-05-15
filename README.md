@@ -19,7 +19,6 @@ No Rust or Node.js required. Download the binary for your platform from [GitHub 
 |---|---|
 | Linux x86_64 | `crdt-node-linux-x86_64` |
 | macOS Apple Silicon | `crdt-node-macos-arm64` |
-| macOS Intel | `crdt-node-macos-x86_64` |
 | Windows | `crdt-node-windows-x86_64.exe` |
 
 Run it:

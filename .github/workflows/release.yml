@@ -19,9 +19,6 @@ jobs:
           - os: macos-latest
             artifact: crdt-node-macos-arm64
             binary: target/release/crdt-app
-          - os: macos-13
-            artifact: crdt-node-macos-x86_64
-            binary: target/release/crdt-app
           - os: windows-latest
             artifact: crdt-node-windows-x86_64.exe
             binary: target/release/crdt-app.exe
