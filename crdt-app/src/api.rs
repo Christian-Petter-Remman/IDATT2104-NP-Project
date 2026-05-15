@@ -108,16 +108,17 @@ async fn node_info(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 /// `POST /api/canvas/cursor` — update the cursor position for a user.
-///
-/// Silently ignores requests with a malformed `user_id` UUID.
 async fn cursor(
     State(s): State<Arc<AppState>>,
     Json(req): Json<CursorRequest>,
 ) -> impl IntoResponse {
-    if let Ok(user_id) = Uuid::parse_str(&req.user_id) {
-        s.update_cursor(user_id, req.x, req.y);
+    match Uuid::parse_str(&req.user_id) {
+        Ok(user_id) => {
+            s.update_cursor(user_id, req.x, req.y);
+            StatusCode::NO_CONTENT
+        }
+        Err(_) => StatusCode::BAD_REQUEST,
     }
-    StatusCode::NO_CONTENT
 }
 
 /// `GET /api/palette` — returns the current shared palette as a JSON array of RGBA arrays.
