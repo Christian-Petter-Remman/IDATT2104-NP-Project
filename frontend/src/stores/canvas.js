@@ -15,7 +15,6 @@ export const useCanvasStore = defineStore('canvas', {
     connected: false,
     nodeId: null,
     nodeAddr: null,
-    apiPort: 8080,
     selectedColor: [0, 0, 0, 255],
   }),
 
@@ -24,32 +23,30 @@ export const useCanvasStore = defineStore('canvas', {
   },
 
   actions: {
-    async init(port) {
-      if (port) this.apiPort = port
-      try {
-        const res = await fetch(`http://localhost:${this.apiPort}/api/node`)
-        const data = await res.json()
-        this.nodeId = data.id
-        this.nodeAddr = data.addr
-      } catch {
-        // backend not ready yet; will retry via reconnect
-      }
+    init() {
       this.connect()
     },
 
+    async fetchNodeInfo() {
+      try {
+        const r = await fetch('/api/node')
+        const d = await r.json()
+        this.nodeId = d.id
+        this.nodeAddr = d.addr
+      } catch {
+        setTimeout(() => this.fetchNodeInfo(), 3000)
+      }
+    },
+
     connect() {
-      if (_ws) return
-      _ws = new WebSocket(`ws://localhost:${this.apiPort}/ws`)
+      if (_ws && _ws.readyState <= WebSocket.OPEN) return
+      _ws = null
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+      _ws = new WebSocket(`${proto}//${location.host}/ws`)
 
       _ws.onopen = () => {
         this.connected = true
-        // Fetch node info if not yet populated (connect may fire before init resolves)
-        if (!this.nodeId) {
-          fetch(`http://localhost:${this.apiPort}/api/node`)
-            .then(r => r.json())
-            .then(d => { this.nodeId = d.id; this.nodeAddr = d.addr })
-            .catch(() => {})
-        }
+        if (!this.nodeId) this.fetchNodeInfo()
       }
 
       _ws.onmessage = (evt) => {
@@ -139,7 +136,7 @@ export const useCanvasStore = defineStore('canvas', {
     },
 
     async paint(x, y, color) {
-      await fetch(`http://localhost:${this.apiPort}/api/canvas/paint`, {
+      await fetch('/api/canvas/paint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ x, y, color }),
@@ -147,7 +144,7 @@ export const useCanvasStore = defineStore('canvas', {
     },
 
     async addColor(color) {
-      await fetch(`http://localhost:${this.apiPort}/api/palette`, {
+      await fetch('/api/palette', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ color }),
@@ -155,7 +152,7 @@ export const useCanvasStore = defineStore('canvas', {
     },
 
     async removeColor(color) {
-      await fetch(`http://localhost:${this.apiPort}/api/palette`, {
+      await fetch('/api/palette', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ color }),

@@ -8,48 +8,82 @@ Multiple nodes sync automatically — paint on one, see it appear on another aft
 
 - **crdt-core** — CRDT implementations (LWW register, ORSet, GCounter, etc.)
 - **crdt-net** — Gossip engine over TCP. Nodes exchange state periodically; merge is CRDT-safe.
-- **crdt-app** — Axum HTTP + WebSocket server. Exposes a REST API and pushes canvas snapshots to connected browsers.
+- **crdt-app** — Axum HTTP + WebSocket server. Serves the frontend and exposes a REST API.
 - **frontend** — Vue 3 single-page app. Pixel canvas, color picker, peer list, leaderboard.
 
-## Prerequisites
+## Quick start (pre-built binary)
 
-- Rust (stable, 2021 edition) — https://rustup.rs
+No Rust or Node.js required. Download the binary for your platform from [GitHub Releases](../../releases/latest):
+
+| Platform | File |
+|---|---|
+| Linux x86_64 | `crdt-node-linux-x86_64` |
+| macOS Apple Silicon | `crdt-node-macos-arm64` |
+| macOS Intel | `crdt-node-macos-x86_64` |
+| Windows | `crdt-node-windows-x86_64.exe` |
+
+Run it:
+
+```
+./crdt-node
+```
+
+Open http://localhost:8080. The canvas loads automatically.
+
+On a LAN, each peer runs their own copy. Nodes discover each other via mDNS with no configuration. If mDNS is unavailable (e.g. university network), specify a peer manually:
+
+```
+./crdt-node --peers 192.168.x.x:9090
+```
+
+## Development
+
+### Prerequisites
+
+- Rust (stable) — https://rustup.rs
 - Node.js 18+ and npm
 
-## Running a single node
+### Running
 
-**Terminal 1 — backend:**
 ```
-cargo run -p crdt-app -- --port 8080 --gossip-port 9090
-```
-
-**Terminal 2 — frontend:**
-```
-cd frontend
-npm install   # only needed the first time
-npm run dev
+npm run setup   # first time only — installs dependencies
+npm run dev     # starts backend (port 8080) and frontend dev server (port 3000) together
 ```
 
-Open http://localhost:5173 in a browser. The UI asks for an API port on first load — enter `8080` and click Connect.
+Open http://localhost:3000. The canvas connects automatically. First compile takes ~30–60s.
 
-## Running two nodes (gossip demo)
+To run processes separately:
 
-**Terminal 1:**
 ```
-cargo run -p crdt-app -- --port 8080 --gossip-port 9090 --peers 127.0.0.1:9091
-```
-
-**Terminal 2:**
-```
-cargo run -p crdt-app -- --port 8081 --gossip-port 9091 --peers 127.0.0.1:9090
+npm run dev:backend    # cargo run -p crdt-app (port 8080, gossip port 9090)
+npm run dev:frontend   # Vite dev server (port 3000, proxies /api and /ws to :8080)
 ```
 
-**Terminal 3 — frontend:**
+### Two nodes on one machine (binary)
+
 ```
-cd frontend && npm run dev
+./crdt-node --port 8080 --gossip-port 9090 --peers 127.0.0.1:9091
+./crdt-node --port 8081 --gossip-port 9091 --peers 127.0.0.1:9090
 ```
 
-Open http://localhost:5173 in **two browser tabs**. In tab 1 enter port `8080`, in tab 2 enter port `8081`. Paint on one — it propagates to the other within ~5 seconds.
+Open http://localhost:8080 and http://localhost:8081 in separate tabs. Both canvases sync.
+
+### Building a release binary
+
+```
+npm run build
+```
+
+Builds the frontend, then compiles the Rust binary with the frontend embedded. Output: `target/release/crdt-app`.
+
+## Releasing
+
+Push a version tag to trigger the CI release workflow, which builds binaries for all platforms and uploads them to GitHub Releases:
+
+```
+git tag v1.0.0
+git push --tags
+```
 
 ## CLI flags
 
@@ -72,10 +106,9 @@ Open http://localhost:5173 in **two browser tabs**. In tab 1 enter port `8080`, 
 | GET | `/api/leaderboard` | Pixel ownership counts per node |
 | GET | `/ws` | WebSocket — streams canvas snapshots on every change |
 
-## Building and testing
+## Testing
 
 ```
-cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 ```

@@ -1,16 +1,22 @@
 use crate::canvas::{CanvasView, LeaderboardEntry, Rgba};
 use crate::state::AppState;
 use axum::{
+    body::Body,
     extract::{ws::WebSocketUpgrade, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
+
+#[derive(RustEmbed)]
+#[folder = "../frontend/dist/"]
+struct Frontend;
 
 #[derive(Deserialize)]
 pub struct PaintRequest {
@@ -38,6 +44,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/palette", get(get_palette).post(add_palette).delete(remove_palette))
         .route("/api/leaderboard", get(get_leaderboard))
         .route("/ws", get(ws_handler))
+        .fallback(static_handler)
         .with_state(state)
         .layer(CorsLayer::permissive())
 }
@@ -103,6 +110,30 @@ async fn get_leaderboard(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         })
         .collect();
     Json(board)
+}
+
+async fn static_handler(uri: axum::http::Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    match Frontend::get(path) {
+        Some(content) => Response::builder()
+            .header(header::CONTENT_TYPE, content.metadata.mimetype())
+            .body(Body::from(content.data.into_owned()))
+            .unwrap(),
+        None => match Frontend::get("index.html") {
+            Some(index) => Response::builder()
+                .header(header::CONTENT_TYPE, "text/html")
+                .body(Body::from(index.data.into_owned()))
+                .unwrap(),
+            None => Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from(
+                    "Frontend not embedded. Build with `npm run build --prefix frontend` before `cargo build`.",
+                ))
+                .unwrap(),
+        },
+    }
 }
 
 async fn ws_handler(State(s): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {

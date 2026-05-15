@@ -15,11 +15,10 @@
     </div>
     <div class="add-row">
       <input
-        v-model="hexInput"
-        class="hex-input"
-        placeholder="#ff0000"
-        maxlength="7"
-        @keydown.enter="addColor"
+        type="color"
+        v-model="colorValue"
+        class="color-input"
+        @change="previewColor"
       />
       <button class="add-btn" @click="addColor">+</button>
     </div>
@@ -32,7 +31,7 @@ import { ref } from 'vue'
 import { useCanvasStore } from '../stores/canvas.js'
 
 const store = useCanvasStore()
-const hexInput = ref('#ff0000')
+const colorValue = ref('#ff0000')
 
 function toHex([r, g, b]) {
   return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
@@ -56,8 +55,13 @@ function selectColor(color) {
   store.selectedColor = color
 }
 
+function previewColor() {
+  const rgba = hexToRgba(colorValue.value)
+  if (rgba) store.selectedColor = rgba
+}
+
 function addColor() {
-  const rgba = hexToRgba(hexInput.value)
+  const rgba = hexToRgba(colorValue.value)
   if (rgba) store.addColor(rgba)
 }
 </script>
@@ -94,18 +98,18 @@ function addColor() {
 .add-row {
   display: flex;
   gap: 4px;
+  align-items: center;
 }
-.hex-input {
-  flex: 1;
-  background: #0f0f0f;
+.color-input {
+  width: 40px;
+  height: 28px;
+  padding: 0;
   border: 1px solid #2a2a2a;
-  color: #e0e0e0;
-  padding: 4px 6px;
-  font-family: 'Courier New', monospace;
-  font-size: 12px;
   border-radius: 2px;
+  background: #0f0f0f;
+  cursor: pointer;
 }
-.hex-input:focus {
+.color-input:focus {
   outline: none;
   border-color: #4af;
 }
@@ -114,6 +118,7 @@ function addColor() {
   border: 1px solid #333;
   color: #e0e0e0;
   width: 28px;
+  height: 28px;
   cursor: pointer;
   border-radius: 2px;
   font-size: 16px;
