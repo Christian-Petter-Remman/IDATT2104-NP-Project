@@ -134,12 +134,6 @@ impl CanvasDocument {
     }
 
     /// Update a peer's cursor position.
-    ///
-    /// Not wired through the REST API yet; the `cursors` field exists so
-    /// CRDT merge/delta logic stays correct once the cursor endpoint
-    /// lands. Marked `#[allow(dead_code)]` so the field's merge path
-    /// keeps compiling without forcing CI failures in the interim.
-    #[allow(dead_code)]
     pub fn update_cursor(&mut self, user: Uuid, x: u8, y: u8, node_id: NodeId) {
         let ts = self.clock.increment(node_id);
         self.cursors
@@ -313,12 +307,9 @@ impl DeltaCrdt for CanvasDocument {
     }
 
     fn is_empty_delta(delta: &Self::Delta) -> bool {
-        // Every state-changing operation increments the clock, so a
-        // non-empty clock delta is the primary signal that something
-        // happened. The per-field checks below are defense in depth —
-        // any code path that mutates a field without bumping the clock
-        // (a future bug we haven't written yet) still produces a
-        // truthy delta this way.
+        // Clock delta is the primary signal. Per-field checks are defense
+        // in depth: a mutation that skips the clock still produces a
+        // truthy delta and avoids a silent WS skip.
         VectorClock::is_empty_delta(&delta.clock)
             && delta.pixels.is_empty()
             && delta.cursors.is_empty()
@@ -340,6 +331,7 @@ pub struct CanvasView {
     pub palette: Vec<[u8; 4]>,
     pub paint_total: u64,
     pub leaderboard: Vec<LeaderboardEntry>,
+    pub cursors: HashMap<String, [u8; 2]>,
 }
 
 #[derive(Serialize)]
@@ -377,6 +369,14 @@ impl From<&CanvasDocument> for CanvasView {
                     pixels: n,
                 })
                 .collect(),
+            cursors: doc
+                .cursors
+                .iter()
+                .map(|(uid, reg)| {
+                    let (x, y) = reg.value();
+                    (uid.to_string(), [x, y])
+                })
+                .collect(),
         }
     }
 }
@@ -398,6 +398,8 @@ pub struct CanvasDeltaView {
     pub paint_total: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub leaderboard: Option<Vec<LeaderboardEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursors: Option<HashMap<String, [u8; 2]>>,
 }
 
 impl CanvasDeltaView {
@@ -455,12 +457,28 @@ impl CanvasDeltaView {
             )
         };
 
+        let cursors = if delta.cursors.is_empty() {
+            None
+        } else {
+            Some(
+                delta
+                    .cursors
+                    .iter()
+                    .map(|(uid, reg)| {
+                        let (x, y) = reg.value();
+                        (uid.to_string(), [x, y])
+                    })
+                    .collect(),
+            )
+        };
+
         Self {
             pixels,
             active_peers,
             palette,
             paint_total,
             leaderboard,
+            cursors,
         }
     }
 }

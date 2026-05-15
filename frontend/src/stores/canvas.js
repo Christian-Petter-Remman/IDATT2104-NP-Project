@@ -4,6 +4,11 @@ import { defineStore } from 'pinia'
 // the WebSocket internal `this instanceof WebSocket` checks.
 let _ws = null
 
+// Stable per-tab identity used for cursor ownership. Survives page refresh
+// within the same tab via sessionStorage.
+const _storedClientId = sessionStorage.getItem('canvas-client-id') ?? crypto.randomUUID()
+sessionStorage.setItem('canvas-client-id', _storedClientId)
+
 export const useCanvasStore = defineStore('canvas', {
   state: () => ({
     pixels: new Map(),          // "x,y" → [r,g,b,a]
@@ -16,6 +21,7 @@ export const useCanvasStore = defineStore('canvas', {
     nodeId: null,
     nodeAddr: null,
     selectedColor: [0, 0, 0, 255],
+    clientId: _storedClientId,
   }),
 
   getters: {
@@ -89,6 +95,10 @@ export const useCanvasStore = defineStore('canvas', {
       }
       this.paintTotal = data.paint_total ?? 0
       this.leaderboard = data.leaderboard ?? []
+      this.cursors.clear()
+      for (const [userId, pos] of Object.entries(data.cursors ?? {})) {
+        this.cursors.set(userId, { x: pos[0], y: pos[1] })
+      }
     },
 
     // Sparse update from the backend's `CanvasDeltaView`.
@@ -120,6 +130,11 @@ export const useCanvasStore = defineStore('canvas', {
       if (data.leaderboard !== undefined) {
         this.leaderboard = data.leaderboard
       }
+      if (data.cursors !== undefined) {
+        for (const [userId, pos] of Object.entries(data.cursors)) {
+          this.cursors.set(userId, { x: pos[0], y: pos[1] })
+        }
+      }
     },
 
     async paint(x, y, color) {
@@ -127,6 +142,14 @@ export const useCanvasStore = defineStore('canvas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ x, y, color }),
+      }).catch(() => {})
+    },
+
+    async updateCursor(x, y) {
+      await fetch('/api/canvas/cursor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: this.clientId, x, y }),
       }).catch(() => {})
     },
 

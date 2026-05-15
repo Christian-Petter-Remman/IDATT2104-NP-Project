@@ -34,18 +34,7 @@ import PeerList from './components/PeerList.vue'
 import Leaderboard from './components/Leaderboard.vue'
 
 const store = useCanvasStore()
-
-// Allow per-tab port selection via URL: ?port=8081. Falls back to 8080.
-// Lets two browser tabs target different backend nodes.
-const urlPort = Number(new URLSearchParams(window.location.search).get('port'))
-const portInput = ref(Number.isFinite(urlPort) && urlPort > 0 ? urlPort : 8080)
-
-function init() {
-  store.init(portInput.value)
-}
-
-
-onMounted(() => store.init(portInput.value))
+onMounted(() => store.init())
 </script>
 
 <style>

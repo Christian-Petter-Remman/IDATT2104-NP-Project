@@ -103,6 +103,10 @@ impl AppState {
         });
     }
 
+    pub fn update_cursor(&self, user: Uuid, x: u8, y: u8) {
+        self.mutate(|doc, id| doc.update_cursor(user, x, y, id));
+    }
+
     pub fn add_palette_color(&self, color: Rgba) {
         self.mutate(|doc, id| doc.add_palette_color(color, &id));
     }

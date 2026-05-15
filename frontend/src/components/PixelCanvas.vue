@@ -17,6 +17,8 @@ import { useCanvasStore } from '../stores/canvas.js'
 const store = useCanvasStore()
 const canvasEl = ref(null)
 let painting = false
+let lastCursorSend = 0
+const CURSOR_THROTTLE_MS = 80
 
 const CELL = 10
 const SIZE = 64
@@ -50,7 +52,7 @@ function render() {
   }
 
   for (const [userId, pos] of store.cursors) {
-    if (userId === store.nodeId) continue
+    if (userId === store.clientId) continue
     ctx.fillStyle = 'rgba(255,255,0,0.7)'
     ctx.beginPath()
     ctx.arc(pos.x * CELL + CELL / 2, pos.y * CELL + CELL / 2, 4, 0, Math.PI * 2)
@@ -70,8 +72,18 @@ function onMouseDown(e) {
   painting = true
   paintAt(e)
 }
+function sendCursor(e) {
+  const now = Date.now()
+  if (now - lastCursorSend < CURSOR_THROTTLE_MS) return
+  lastCursorSend = now
+  const x = Math.min(SIZE - 1, Math.max(0, Math.floor(e.offsetX / CELL)))
+  const y = Math.min(SIZE - 1, Math.max(0, Math.floor(e.offsetY / CELL)))
+  store.updateCursor(x, y)
+}
+
 function onMouseMove(e) {
   if (painting) paintAt(e)
+  sendCursor(e)
 }
 function onMouseUp() { painting = false }
 function onMouseLeave() { painting = false }

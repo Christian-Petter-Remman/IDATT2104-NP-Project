@@ -54,10 +54,18 @@ pub struct PaletteRequest {
     pub color: [u8; 4],
 }
 
+#[derive(Deserialize)]
+pub struct CursorRequest {
+    pub user_id: String,
+    pub x: u8,
+    pub y: u8,
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/canvas", get(get_canvas))
         .route("/api/canvas/paint", post(paint))
+        .route("/api/canvas/cursor", post(cursor))
         .route("/api/node", get(node_info))
         .route(
             "/api/palette",
@@ -85,6 +93,16 @@ async fn node_info(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         id: s.node_id().to_string(),
         addr: s.addr().to_string(),
     })
+}
+
+async fn cursor(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<CursorRequest>,
+) -> impl IntoResponse {
+    if let Ok(user_id) = Uuid::parse_str(&req.user_id) {
+        s.update_cursor(user_id, req.x, req.y);
+    }
+    StatusCode::NO_CONTENT
 }
 
 async fn get_palette(State(s): State<Arc<AppState>>) -> impl IntoResponse {
