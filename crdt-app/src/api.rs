@@ -121,14 +121,18 @@ async fn static_handler(uri: axum::http::Uri) -> Response {
             .header(header::CONTENT_TYPE, content.metadata.mimetype())
             .body(Body::from(content.data.into_owned()))
             .unwrap(),
-        None => {
-            // SPA fallback: any unknown path serves index.html so Vue Router works
-            let index = Frontend::get("index.html").unwrap();
-            Response::builder()
+        None => match Frontend::get("index.html") {
+            Some(index) => Response::builder()
                 .header(header::CONTENT_TYPE, "text/html")
                 .body(Body::from(index.data.into_owned()))
-                .unwrap()
-        }
+                .unwrap(),
+            None => Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .body(Body::from(
+                    "Frontend not embedded. Build with `npm run build --prefix frontend` before `cargo build`.",
+                ))
+                .unwrap(),
+        },
     }
 }
 

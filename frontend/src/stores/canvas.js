@@ -27,19 +27,26 @@ export const useCanvasStore = defineStore('canvas', {
       this.connect()
     },
 
+    async fetchNodeInfo() {
+      try {
+        const r = await fetch('/api/node')
+        const d = await r.json()
+        this.nodeId = d.id
+        this.nodeAddr = d.addr
+      } catch {
+        setTimeout(() => this.fetchNodeInfo(), 3000)
+      }
+    },
+
     connect() {
-      if (_ws) return
+      if (_ws && _ws.readyState <= WebSocket.OPEN) return
+      _ws = null
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
       _ws = new WebSocket(`${proto}//${location.host}/ws`)
 
       _ws.onopen = () => {
         this.connected = true
-        if (!this.nodeId) {
-          fetch('/api/node')
-            .then(r => r.json())
-            .then(d => { this.nodeId = d.id; this.nodeAddr = d.addr })
-            .catch(() => {})
-        }
+        if (!this.nodeId) this.fetchNodeInfo()
       }
 
       _ws.onmessage = (evt) => {

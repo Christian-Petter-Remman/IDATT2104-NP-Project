@@ -18,7 +18,7 @@
         type="color"
         v-model="colorValue"
         class="color-input"
-        @input="previewColor"
+        @change="previewColor"
       />
       <button class="add-btn" @click="addColor">+</button>
     </div>
