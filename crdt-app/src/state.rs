@@ -12,7 +12,9 @@
 
 use crate::canvas::{CanvasDocument, Rgba};
 use crdt_core::Crdt;
-use std::sync::Arc;
+use crdt_net::GossipEngine;
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -25,6 +27,7 @@ pub struct AppState {
     node_id: Uuid,
     addr: String,
     canvas: watch::Sender<CanvasDocument>,
+    engine: OnceLock<Arc<GossipEngine>>,
 }
 
 impl AppState {
@@ -38,6 +41,7 @@ impl AppState {
             node_id,
             addr,
             canvas: tx,
+            engine: OnceLock::new(),
         });
         (state, rx)
     }
@@ -50,6 +54,18 @@ impl AppState {
     /// Socket address this node is listening on (e.g. `"127.0.0.1:3000"`).
     pub fn addr(&self) -> &str {
         &self.addr
+    }
+
+    /// Wire the gossip engine in after construction (engine is created after state).
+    pub fn set_engine(&self, engine: Arc<GossipEngine>) {
+        let _ = self.engine.set(engine);
+    }
+
+    /// Add a bootstrap peer to the gossip engine at runtime.
+    pub fn add_bootstrap(&self, addr: SocketAddr) {
+        if let Some(engine) = self.engine.get() {
+            engine.add_bootstrap(addr);
+        }
     }
 
     /// Apply an arbitrary mutation to the canvas.
@@ -107,8 +123,8 @@ impl AppState {
     /// Remove `user` from the active-peer set.
     pub fn remove_user(&self, user: &Uuid) {
         let user = *user;
-        self.mutate(|doc, _| {
-            doc.remove_user(&user);
+        self.mutate(|doc, node_id| {
+            doc.remove_user(&user, node_id);
         });
     }
 
@@ -196,5 +212,12 @@ mod tests {
         state.paint(3, 4, (10, 20, 30, 40));
         let pixel = rx.borrow().pixels.get(&(3, 4)).map(|r| r.value());
         assert_eq!(pixel, Some((10, 20, 30, 40)));
+    }
+
+    #[test]
+    fn add_bootstrap_without_engine_is_noop() {
+        let (state, _rx) = make();
+        // Must not panic when engine not yet wired in.
+        state.add_bootstrap("127.0.0.1:9090".parse().unwrap());
     }
 }

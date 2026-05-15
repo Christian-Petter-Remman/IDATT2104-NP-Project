@@ -66,6 +66,7 @@ async fn main() {
             .await
             .expect("gossip engine failed to start"),
     );
+    state.set_engine(Arc::clone(&engine));
 
     let state_clone = Arc::clone(&state);
     let mut merged_rx = merged_tx.subscribe();
