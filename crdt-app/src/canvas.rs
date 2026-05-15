@@ -13,7 +13,7 @@
 //!    [`LWWRegister`], which needs a monotonic timestamp to decide
 //!    which write wins. The clock's [`increment`](VectorClock::increment)
 //!    method returns a value that is strictly greater than any
-//!    component in the clock, so a paint that happens after observing 
+//!    component in the clock, so a paint that happens after observing
 //!    remote state always gets a higher timestamp.
 //!
 //! 2. **Causality tracking.** After two documents merge, their clocks
@@ -35,7 +35,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
-
 
 pub type Rgba = (u8, u8, u8, u8);
 /// Canvas is bounded to 256×256 by u8 coordinates.
@@ -60,7 +59,7 @@ pub struct CanvasDocument {
     pub cursors: HashMap<Uuid, LWWRegister<PixelCoord>>,
     clock: VectorClock,
 }
- 
+
 impl Default for CanvasDocument {
     fn default() -> Self {
         Self {
@@ -71,7 +70,6 @@ impl Default for CanvasDocument {
         }
     }
 }
-
 
 impl CanvasDocument {
     pub fn new() -> Self {
@@ -91,17 +89,12 @@ impl CanvasDocument {
             .set(color, ts, node_id);
     }
 
-
-    // TODO: why increment clock? And should only increment by one or max?
-    // and return a bool, and for other methods as well?
-
     /// Register a peer as active. Uses ORSet add-wins semantics: a
     /// concurrent add and remove resolves in favour of the add.
     pub fn add_user(&mut self, user: Uuid, node_id: &NodeId) {
         self.clock.increment(*node_id);
         self.users.insert(user, node_id);
     }
-
 
     /// Remove a peer from the active set.
     pub fn remove_user(&mut self, user: &Uuid) -> bool {
@@ -122,7 +115,7 @@ impl CanvasDocument {
     }
 
     // TODO: wire cursor updates via API once crdt-net gossip is integrated. Done maybe?
-     /// Update a peer's cursor position.
+    /// Update a peer's cursor position.
     pub fn update_cursor(&mut self, user: Uuid, x: u8, y: u8, node_id: NodeId) {
         let ts = self.clock.increment(node_id);
         self.cursors
@@ -130,7 +123,6 @@ impl CanvasDocument {
             .or_insert_with(|| LWWRegister::new((0, 0), 0, node_id))
             .set((x, y), ts, node_id);
     }
-
 }
 
 impl Crdt for CanvasDocument {
@@ -148,7 +140,7 @@ impl Crdt for CanvasDocument {
     /// have seen.
     fn merge(&mut self, other: Self) {
         self.clock.merge(other.clock);
- 
+
         for ((x, y), reg) in other.pixels {
             match self.pixels.entry((x, y)) {
                 Entry::Occupied(mut e) => e.get_mut().merge(reg),
@@ -157,9 +149,9 @@ impl Crdt for CanvasDocument {
                 }
             }
         }
- 
+
         self.users.merge(other.users);
- 
+
         for (uid, reg) in other.cursors {
             match self.cursors.entry(uid) {
                 Entry::Occupied(mut e) => e.get_mut().merge(reg),
@@ -169,7 +161,6 @@ impl Crdt for CanvasDocument {
             }
         }
     }
-
 
     fn compare(&self, other: &Self) -> bool {
         self.clock.compare(&other.clock)
@@ -183,9 +174,8 @@ impl Crdt for CanvasDocument {
                 .iter()
                 .all(|(k, r)| other.cursors.get(k).is_some_and(|o| r.compare(o)))
     }
-
 }
- 
+
 /// Client-facing view. Strips CRDT metadata (timestamps, node ids,
 /// vector clock) so the browser only sees pixel colors and active users.
 #[derive(Serialize)]
@@ -193,7 +183,6 @@ pub struct CanvasView {
     pub pixels: HashMap<String, [u8; 4]>,
     pub users: Vec<String>,
 }
-
 
 impl From<&CanvasDocument> for CanvasView {
     fn from(doc: &CanvasDocument) -> Self {
@@ -213,34 +202,33 @@ impl From<&CanvasDocument> for CanvasView {
     }
 }
 
- 
 #[cfg(test)]
 mod tests {
     use super::*;
- 
+
     fn node(id: u128) -> NodeId {
         Uuid::from_u128(id)
     }
- 
+
     fn get_pixel(doc: &CanvasDocument, x: u8, y: u8) -> Rgba {
         doc.pixels
             .get(&(x, y))
             .map(|r| r.value())
             .unwrap_or(DEFAULT_PIXEL)
     }
- 
+
     #[test]
     fn paint_and_get() {
         let mut d = CanvasDocument::new();
         d.paint(1, 2, (255, 0, 0, 255), node(1));
         assert_eq!(get_pixel(&d, 1, 2), (255, 0, 0, 255));
     }
- 
+
     #[test]
     fn default_pixel_white() {
         assert_eq!(get_pixel(&CanvasDocument::new(), 0, 0), DEFAULT_PIXEL);
     }
- 
+
     #[test]
     fn lww_higher_ts_wins() {
         let mut a = CanvasDocument::new();
@@ -252,7 +240,7 @@ mod tests {
         a.merge(b);
         assert_eq!(get_pixel(&a, 0, 0), (255, 0, 0, 255));
     }
- 
+
     /// The critical test for VectorClock + LWW interaction.
     ///
     /// B paints many times, A merges B's state, then A paints once.
@@ -263,20 +251,20 @@ mod tests {
     fn paint_after_merge_beats_higher_remote_count() {
         let mut a = CanvasDocument::new();
         let mut b = CanvasDocument::new();
- 
+
         // B paints 5 times on the same pixel.
         for _ in 0..5 {
             b.paint(0, 0, (255, 0, 0, 255), node(2));
         }
- 
+
         // A merges B's state, then paints once.
         a.merge(b);
         a.paint(0, 0, (0, 0, 255, 255), node(1));
- 
+
         // A painted after seeing B — A must win.
         assert_eq!(get_pixel(&a, 0, 0), (0, 0, 255, 255));
     }
- 
+
     #[test]
     fn merge_commutative() {
         let mut a = CanvasDocument::new();
@@ -284,14 +272,14 @@ mod tests {
         a.paint(0, 0, (255, 0, 0, 255), node(1));
         a.paint(0, 0, (255, 0, 0, 255), node(1));
         b.paint(0, 0, (0, 0, 255, 255), node(2));
- 
+
         let mut a1 = a.clone();
         a1.merge(b.clone());
         let mut b1 = b.clone();
         b1.merge(a.clone());
         assert_eq!(get_pixel(&a1, 0, 0), get_pixel(&b1, 0, 0));
     }
- 
+
     #[test]
     fn merge_idempotent() {
         let user = Uuid::from_u128(7);
@@ -303,21 +291,21 @@ mod tests {
         assert_eq!(get_pixel(&a, 0, 0), (1, 2, 3, 4));
         assert!(a.active_users().contains(&user));
     }
- 
+
     #[test]
     fn user_add_wins_on_concurrent_remove() {
         let user = Uuid::from_u128(99);
         let mut peer_a = CanvasDocument::new();
         peer_a.add_user(user, &node(1));
- 
+
         let mut peer_b = CanvasDocument::new();
         peer_b.add_user(user, &node(2));
         peer_b.remove_user(&user);
- 
+
         let mut a1 = peer_a.clone();
         a1.merge(peer_b.clone());
         assert!(a1.active_users().contains(&user));
- 
+
         let mut b1 = peer_b.clone();
         b1.merge(peer_a.clone());
         assert!(b1.active_users().contains(&user));
