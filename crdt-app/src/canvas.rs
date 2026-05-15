@@ -200,6 +200,12 @@ impl Crdt for CanvasDocument {
 
         self.palette.merge(other.palette);
         self.paint_counts.merge(other.paint_counts);
+
+        // Evict cursor entries for peers no longer in the active set.
+        // The cursor HashMap has no tombstone mechanism, so without this a
+        // departed peer's cursor persists on remote nodes indefinitely.
+        let active = self.users.value();
+        self.cursors.retain(|uid, _| active.contains(uid));
     }
 
     /// Returns `true` when `self` is causally dominated by `other` across all fields.
@@ -341,6 +347,9 @@ impl DeltaCrdt for CanvasDocument {
 
         self.palette.merge_delta(delta.palette);
         self.paint_counts.merge_delta(delta.paint_counts);
+
+        let active = self.users.value();
+        self.cursors.retain(|uid, _| active.contains(uid));
     }
 
     fn is_empty_delta(delta: &Self::Delta) -> bool {

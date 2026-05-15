@@ -312,28 +312,39 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState
 
     let mut rx = state.subscribe();
     loop {
-        if rx.changed().await.is_err() {
-            break;
+        tokio::select! {
+            result = rx.changed() => {
+                if result.is_err() {
+                    break;
+                }
+                let snapshot = rx.borrow_and_update().clone();
+                let delta = snapshot.delta_since(&last_seen);
+                if CanvasDocument::is_empty_delta(&delta) {
+                    continue;
+                }
+                let view = CanvasDeltaView::project(&delta, &snapshot);
+                let envelope = WsMessage::Delta(view);
+                let Ok(msg) = serde_json::to_string(&envelope) else {
+                    tracing::error!("failed to serialize canvas delta");
+                    break;
+                };
+                if socket
+                    .send(axum::extract::ws::Message::Text(msg))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                last_seen = snapshot.version();
+            }
+            msg = socket.recv() => {
+                // Detect socket close without waiting for the next state delta.
+                match msg {
+                    Some(Ok(_)) => {} // ignore client messages (no client→server protocol)
+                    _ => break,
+                }
+            }
         }
-        let snapshot = rx.borrow_and_update().clone();
-        let delta = snapshot.delta_since(&last_seen);
-        if CanvasDocument::is_empty_delta(&delta) {
-            continue;
-        }
-        let view = CanvasDeltaView::project(&delta, &snapshot);
-        let envelope = WsMessage::Delta(view);
-        let Ok(msg) = serde_json::to_string(&envelope) else {
-            tracing::error!("failed to serialize canvas delta");
-            break;
-        };
-        if socket
-            .send(axum::extract::ws::Message::Text(msg))
-            .await
-            .is_err()
-        {
-            break;
-        }
-        last_seen = snapshot.version();
     }
 
     state.remove_user(&user_id);
