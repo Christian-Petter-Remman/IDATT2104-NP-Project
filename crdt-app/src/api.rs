@@ -127,7 +127,7 @@ async fn static_handler(uri: axum::http::Uri) -> Response {
                 .body(Body::from(index.data.into_owned()))
                 .unwrap(),
             None => Response::builder()
-                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::from(
                     "Frontend not embedded. Build with `npm run build --prefix frontend` before `cargo build`.",
                 ))
