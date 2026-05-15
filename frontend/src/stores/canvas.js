@@ -24,28 +24,20 @@ export const useCanvasStore = defineStore('canvas', {
   },
 
   actions: {
-    async init(port) {
+    init(port) {
       if (port) this.apiPort = port
-      try {
-        const res = await fetch(`http://localhost:${this.apiPort}/api/node`)
-        const data = await res.json()
-        this.nodeId = data.id
-        this.nodeAddr = data.addr
-      } catch {
-        // backend not ready yet; will retry via reconnect
-      }
       this.connect()
     },
 
     connect() {
       if (_ws) return
-      _ws = new WebSocket(`ws://localhost:${this.apiPort}/ws`)
+      _ws = new WebSocket(`ws://${window.location.hostname}:${this.apiPort}/ws`)
 
       _ws.onopen = () => {
         this.connected = true
         // Fetch node info if not yet populated (connect may fire before init resolves)
         if (!this.nodeId) {
-          fetch(`http://localhost:${this.apiPort}/api/node`)
+          fetch(`http://${window.location.hostname}:${this.apiPort}/api/node`)
             .then(r => r.json())
             .then(d => { this.nodeId = d.id; this.nodeAddr = d.addr })
             .catch(() => {})
@@ -139,7 +131,7 @@ export const useCanvasStore = defineStore('canvas', {
     },
 
     async paint(x, y, color) {
-      await fetch(`http://localhost:${this.apiPort}/api/canvas/paint`, {
+      await fetch(`http://${window.location.hostname}:${this.apiPort}/api/canvas/paint`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ x, y, color }),
@@ -147,7 +139,7 @@ export const useCanvasStore = defineStore('canvas', {
     },
 
     async addColor(color) {
-      await fetch(`http://localhost:${this.apiPort}/api/palette`, {
+      await fetch(`http://${window.location.hostname}:${this.apiPort}/api/palette`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ color }),
@@ -155,7 +147,7 @@ export const useCanvasStore = defineStore('canvas', {
     },
 
     async removeColor(color) {
-      await fetch(`http://localhost:${this.apiPort}/api/palette`, {
+      await fetch(`http://${window.location.hostname}:${this.apiPort}/api/palette`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ color }),
