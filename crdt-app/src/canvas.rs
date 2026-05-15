@@ -316,9 +316,12 @@ impl DeltaCrdt for CanvasDocument {
     }
 
     fn is_empty_delta(delta: &Self::Delta) -> bool {
-        // Clock progression is the canonical "did anything happen" signal.
-        // Every state-changing operation increments the clock, so an
-        // empty clock delta implies no per-field changes worth shipping.
+        // Every state-changing operation increments the clock, so a
+        // non-empty clock delta is the primary signal that something
+        // happened. The per-field checks below are defense in depth —
+        // any code path that mutates a field without bumping the clock
+        // (a future bug we haven't written yet) still produces a
+        // truthy delta this way.
         VectorClock::is_empty_delta(&delta.clock)
             && delta.pixels.is_empty()
             && delta.cursors.is_empty()

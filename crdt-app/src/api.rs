@@ -1,4 +1,4 @@
-use crate::canvas::{CanvasDeltaView, CanvasView, LeaderboardEntry, Rgba};
+use crate::canvas::{CanvasDeltaView, CanvasDocument, CanvasView, LeaderboardEntry, Rgba};
 use crate::state::AppState;
 use axum::{
     extract::{ws::WebSocketUpgrade, State},
@@ -156,7 +156,7 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState
         }
         let snapshot = rx.borrow_and_update().clone();
         let delta = snapshot.delta_since(&last_seen);
-        if crate::canvas::CanvasDocument::is_empty_delta(&delta) {
+        if CanvasDocument::is_empty_delta(&delta) {
             continue;
         }
         let view = CanvasDeltaView::project(&delta, &snapshot);

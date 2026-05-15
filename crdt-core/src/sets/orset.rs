@@ -14,8 +14,8 @@ use std::hash::Hash;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tag {
-    pub node_id: NodeId,
-    pub seq: u64,
+    pub(crate) node_id: NodeId,
+    pub(crate) seq: u64,
 }
 
 /// An observed-remove set with add-wins.

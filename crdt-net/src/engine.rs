@@ -675,6 +675,17 @@ fn spawn_ticker<T>(
                             ),
                         };
 
+                        // `next_version` reflects the snapshot at tick
+                        // time, not the state at send-completion time.
+                        // In the gap between tick and ack the local
+                        // state may have advanced further, but the
+                        // watermark only needs to mark "what the peer
+                        // is known to have absorbed." Recording too low
+                        // is corrected on the next tick (the next
+                        // delta covers the gap); recording too high
+                        // would be the bug — the receiver's
+                        // `version_includes` check drops frames whose
+                        // `since` baseline we never had.
                         let next_version = current_version.clone();
                         tokio::spawn(async move {
                             let send_result = match mode {

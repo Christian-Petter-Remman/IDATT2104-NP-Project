@@ -85,6 +85,11 @@ async fn main() {
         if tokio::signal::ctrl_c().await.is_ok() {
             tracing::info!("ctrl-c received, sending Goodbye");
             engine_for_signal.graceful_shutdown().await;
+            // `process::exit(0)` skips Axum's graceful drain — any
+            // in-flight HTTP/WS request is severed mid-response.
+            // Acceptable for this demo binary; a production deployment
+            // would wire `axum::serve(...).with_graceful_shutdown(...)`
+            // to the same signal and wait for Axum to settle here.
             std::process::exit(0);
         }
     });
@@ -97,6 +102,8 @@ async fn main() {
     axum::serve(listener, api::router(state))
         .await
         .expect("server error");
-
-    drop(engine);
+    // `engine` and its tasks tear down via `Arc` drop on process exit.
+    // The Ctrl+C path above already called `graceful_shutdown` before
+    // `process::exit`, so reaching this point means `axum::serve`
+    // returned on its own — unusual for this binary.
 }
