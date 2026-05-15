@@ -16,6 +16,14 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # `crdt-app/src/api.rs` uses `#[derive(RustEmbed)]` pointing at
+      # `frontend/dist/`. The macro fails at compile time if the folder
+      # doesn't exist, so the Rust job needs the frontend built before
+      # `cargo test`/`cargo clippy` will compile.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd frontend && npm ci && npm run build
       - run: cargo fmt --check
       - run: cargo test --workspace
       - run: cargo clippy --workspace -- -D warnings

@@ -1,4 +1,4 @@
-use crate::traits::{Crdt, NodeId};
+use crate::traits::{Crdt, DeltaCrdt, NodeId};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +65,49 @@ impl<T: Clone + PartialEq> Crdt for LWWRegister<T> {
     /// or equal timestamp with a higher or equal node_id.
     fn compare(&self, other: &Self) -> bool {
         !other.is_superseded_by(self)
+    }
+}
+
+impl<T: Clone + PartialEq> DeltaCrdt for LWWRegister<T> {
+    /// `Some(self)` iff this register would supersede the receiver's known
+    /// `(timestamp, node_id)`; `None` otherwise (receiver is already at or
+    /// past this register).
+    type Delta = Option<LWWRegister<T>>;
+    /// `(0, Uuid::nil())` represents "receiver knows no register yet" — any
+    /// register dominates that.
+    type Version = (u64, NodeId);
+
+    fn version(&self) -> Self::Version {
+        (self.timestamp, self.node_id)
+    }
+
+    fn delta_since(&self, since: &Self::Version) -> Self::Delta {
+        let (since_ts, since_node) = *since;
+        let exceeds =
+            self.timestamp > since_ts || (self.timestamp == since_ts && self.node_id > since_node);
+        if exceeds {
+            Some(self.clone())
+        } else {
+            None
+        }
+    }
+
+    fn merge_delta(&mut self, delta: Self::Delta) {
+        if let Some(other) = delta {
+            self.merge(other);
+        }
+    }
+
+    fn is_empty_delta(delta: &Self::Delta) -> bool {
+        delta.is_none()
+    }
+
+    /// `(ts, node)` is included when `current` is at least as recent as
+    /// `other` under the same lex order LWW uses for tiebreaks.
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        let (cur_ts, cur_node) = *current;
+        let (oth_ts, oth_node) = *other;
+        cur_ts > oth_ts || (cur_ts == oth_ts && cur_node >= oth_node)
     }
 }
 

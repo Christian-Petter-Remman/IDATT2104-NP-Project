@@ -1,4 +1,4 @@
-use crate::traits::{Crdt, NodeId};
+use crate::traits::{Crdt, DeltaCrdt, NodeId};
 use std::collections::HashMap;
 
 /// Grow-only counter.
@@ -53,6 +53,44 @@ impl Crdt for GCounter {
     /// True if every component of self ≤ other.
     fn compare(&self, other: &Self) -> bool {
         self.counts.iter().all(|(k, v)| *v <= other.get(k))
+    }
+}
+
+impl DeltaCrdt for GCounter {
+    /// Sparse per-node delta containing only nodes whose count exceeds
+    /// the receiver's view.
+    type Delta = HashMap<NodeId, u64>;
+    type Version = HashMap<NodeId, u64>;
+
+    fn version(&self) -> Self::Version {
+        self.counts.clone()
+    }
+
+    fn delta_since(&self, since: &Self::Version) -> Self::Delta {
+        self.counts
+            .iter()
+            .filter_map(|(node, &count)| {
+                let known = since.get(node).copied().unwrap_or(0);
+                (count > known).then_some((*node, count))
+            })
+            .collect()
+    }
+
+    fn merge_delta(&mut self, delta: Self::Delta) {
+        for (node, count) in delta {
+            let e = self.counts.entry(node).or_insert(0);
+            *e = (*e).max(count);
+        }
+    }
+
+    fn is_empty_delta(delta: &Self::Delta) -> bool {
+        delta.is_empty()
+    }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        other
+            .iter()
+            .all(|(k, v)| current.get(k).copied().unwrap_or(0) >= *v)
     }
 }
 

@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use crdt_core::Crdt;
+use crdt_core::{Crdt, DeltaCrdt};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -60,5 +60,45 @@ impl Crdt for MockCrdt {
         self.counts
             .iter()
             .all(|(k, v)| other.counts.get(k).is_some_and(|ov| v <= ov))
+    }
+}
+
+impl DeltaCrdt for MockCrdt {
+    /// Sparse map of entries whose counter exceeds the receiver's known
+    /// value for that node.
+    type Delta = BTreeMap<Uuid, u64>;
+    type Version = BTreeMap<Uuid, u64>;
+
+    fn version(&self) -> Self::Version {
+        self.counts.clone()
+    }
+
+    fn delta_since(&self, since: &Self::Version) -> Self::Delta {
+        self.counts
+            .iter()
+            .filter_map(|(k, &v)| {
+                let known = since.get(k).copied().unwrap_or(0);
+                (v > known).then_some((*k, v))
+            })
+            .collect()
+    }
+
+    fn merge_delta(&mut self, delta: Self::Delta) {
+        for (k, v) in delta {
+            let slot = self.counts.entry(k).or_default();
+            if v > *slot {
+                *slot = v;
+            }
+        }
+    }
+
+    fn is_empty_delta(delta: &Self::Delta) -> bool {
+        delta.is_empty()
+    }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        other
+            .iter()
+            .all(|(k, v)| current.get(k).copied().unwrap_or(0) >= *v)
     }
 }

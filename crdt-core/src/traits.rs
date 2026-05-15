@@ -57,3 +57,58 @@ pub trait Crdt: Clone {
     /// both replicas remain unchanged and usable afterward.
     fn compare(&self, other: &Self) -> bool;
 }
+
+/// Extension of [`Crdt`] for delta-state replication.
+///
+/// Where [`Crdt::merge`] absorbs an entire replica, [`DeltaCrdt`] lets a
+/// sender ship only the part of its state the receiver does not yet have.
+/// The receiver applies the delta via [`merge_delta`](Self::merge_delta),
+/// which preserves the same convergence guarantees as `merge`.
+///
+/// # Soundness
+///
+/// For every pair of replicas `(a, b)` of the same `DeltaCrdt`:
+///
+/// ```text
+/// let delta = a.delta_since(&b.version());
+/// b.merge_delta(delta);
+/// assert!(a.compare(&b));  // b now knows everything a knew
+/// ```
+///
+/// `merge_delta` must remain commutative, associative, and idempotent so
+/// out-of-order / duplicated deltas are safe.
+pub trait DeltaCrdt: Crdt {
+    /// Compact, mergeable description of "what `self` knows that a peer at
+    /// `Version` does not".
+    type Delta: Clone;
+
+    /// Cheap summary of the causal frontier a peer needs to ship a useful
+    /// delta. Typically a vector clock or a per-node `HashMap<NodeId, u64>`.
+    type Version: Clone;
+
+    /// Returns the sender's current version, suitable to pass back as the
+    /// `since` argument of [`delta_since`](Self::delta_since) on a peer.
+    fn version(&self) -> Self::Version;
+
+    /// Computes the delta of `self` relative to the receiver's `since`
+    /// version.
+    fn delta_since(&self, since: &Self::Version) -> Self::Delta;
+
+    /// Applies a delta. Equivalent to `merge` for the subset of state the
+    /// delta covers; idempotent.
+    fn merge_delta(&mut self, delta: Self::Delta);
+
+    /// True when `delta` would not change any replica's state. Used by the
+    /// network layer to skip empty broadcasts.
+    fn is_empty_delta(delta: &Self::Delta) -> bool;
+
+    /// True when a replica at `current` already knows everything a peer at
+    /// `other` did. The network layer uses this on receiving a `SyncDelta`
+    /// to detect when the sender's baseline (`since`) is no longer
+    /// dominated by the receiver's state — in that case the delta must be
+    /// dropped, and the sender's next periodic full `Sync` allowed to
+    /// catch the receiver up. Without this check, a peer whose state has
+    /// regressed (restart without graceful `Goodbye`, manual reset) would
+    /// silently apply a delta computed against a version it never had.
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool;
+}

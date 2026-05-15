@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::traits::{Crdt, NodeId};
+use crate::traits::{Crdt, DeltaCrdt, NodeId};
 
 /// Causality primitive used throughout the canvas CRDT.
 ///
@@ -37,7 +37,7 @@ impl VectorClock {
     }
 
     /// Advances `node`'s counter past all observed values and returns it.
-    /// 
+    ///
     /// This is the Lamport clock rule applied to the vector clock.
     /// The returned timestamp is strictly greater than any component
     /// in the clock, making it safe to use as an LWW timestamp.
@@ -72,7 +72,10 @@ impl VectorClock {
     }
 
     /// Returns `true` if `self` ≥ `other` component-wise.
-    fn dominates(&self, other: &Self) -> bool {
+    ///
+    /// Public so other crates implementing [`DeltaCrdt`] can reuse it in
+    /// `version_includes` without re-deriving the comparison.
+    pub fn dominates(&self, other: &Self) -> bool {
         other.clock.iter().all(|(k, v)| self.get(k) >= *v)
     }
 }
@@ -96,6 +99,39 @@ impl Crdt for VectorClock {
     /// i.e. merging other into self would produce other unchanged.
     fn compare(&self, other: &Self) -> bool {
         other.dominates(self)
+    }
+}
+
+impl DeltaCrdt for VectorClock {
+    /// A delta is itself a (sparse) vector clock: only the entries whose
+    /// component strictly exceeds the receiver's known value.
+    type Delta = VectorClock;
+    type Version = VectorClock;
+
+    fn version(&self) -> Self::Version {
+        self.clone()
+    }
+
+    fn delta_since(&self, since: &Self::Version) -> Self::Delta {
+        let mut delta = VectorClock::new();
+        for (node, &count) in &self.clock {
+            if count > since.get(node) {
+                delta.clock.insert(*node, count);
+            }
+        }
+        delta
+    }
+
+    fn merge_delta(&mut self, delta: Self::Delta) {
+        self.merge(delta);
+    }
+
+    fn is_empty_delta(delta: &Self::Delta) -> bool {
+        delta.clock.is_empty()
+    }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        current.dominates(other)
     }
 }
 
