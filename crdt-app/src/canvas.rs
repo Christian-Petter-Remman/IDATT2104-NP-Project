@@ -1,3 +1,9 @@
+//! Canvas CRDT document and associated view types.
+//!
+//! [`CanvasDocument`] is the authoritative shared state gossiped between peers.
+//! [`CanvasView`] and [`CanvasDeltaView`] are serialization-only projections
+//! that strip CRDT metadata before sending to the browser.
+
 use crdt_core::clocks::VectorClock;
 use crdt_core::counters::GCounter;
 use crdt_core::registers::lww_register::LWWRegister;
@@ -8,11 +14,17 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+/// RGBA color stored as four `u8` channels: red, green, blue, alpha.
 pub type Rgba = (u8, u8, u8, u8);
-/// Canvas is bounded to 256×256 by u8 coordinates.
+/// Canvas pixel coordinate. Both axes are bounded to `[0, 255]` by the `u8` type.
 pub type PixelCoord = (u8, u8);
+/// Color written to pixels that have never been painted (opaque white).
 pub const DEFAULT_PIXEL: Rgba = (255, 255, 255, 255);
 
+/// Custom serde for `HashMap<PixelCoord, LWWRegister<Rgba>>`.
+///
+/// Tuple keys are not valid JSON object keys, so the map is serialized as a
+/// sequence of `(key, value)` pairs and deserialized back into a `HashMap`.
 mod pixel_map_serde {
     use super::*;
     use serde::{Deserializer, Serializer};
@@ -74,6 +86,7 @@ impl Default for CanvasDocument {
 }
 
 impl CanvasDocument {
+    /// Create an empty canvas with no pixels, users, palette entries, or paint counts.
     pub fn new() -> Self {
         Self::default()
     }
@@ -108,21 +121,25 @@ impl CanvasDocument {
         self.users.value()
     }
 
+    /// Add `color` to the shared palette using ORSet add-wins semantics.
     pub fn add_palette_color(&mut self, color: Rgba, node_id: &NodeId) {
         let seq = self.clock.increment(*node_id);
         self.palette.insert(color, node_id, seq);
     }
 
+    /// Remove `color` from the shared palette. Returns `true` if the color was present.
     pub fn remove_palette_color(&mut self, color: &Rgba) -> bool {
         self.palette.remove(color)
     }
 
+    /// Returns palette colors sorted for deterministic display order.
     pub fn palette_colors(&self) -> Vec<Rgba> {
         let mut colors: Vec<Rgba> = self.palette.value().into_iter().collect();
         colors.sort();
         colors
     }
 
+    /// Returns `(node_id, pixel_count)` pairs sorted descending by pixel ownership.
     pub fn ownership_leaderboard(&self) -> Vec<(NodeId, u64)> {
         let mut counts: HashMap<NodeId, u64> = HashMap::new();
         for reg in self.pixels.values() {
@@ -146,10 +163,17 @@ impl CanvasDocument {
 impl Crdt for CanvasDocument {
     type Value = Self;
 
+    /// The document is its own value — clones the full state.
     fn value(&self) -> Self {
         self.clone()
     }
 
+    /// Merge `other` into `self` using each field's own CRDT merge rule.
+    ///
+    /// - Clock: Lamport max per node.
+    /// - Pixels / cursors: LWW — higher timestamp wins per coordinate.
+    /// - Users / palette: ORSet — add-wins on concurrent add/remove.
+    /// - Paint counts: GCounter — per-node max.
     fn merge(&mut self, other: Self) {
         self.clock.merge(other.clock);
 
@@ -177,6 +201,7 @@ impl Crdt for CanvasDocument {
         self.paint_counts.merge(other.paint_counts);
     }
 
+    /// Returns `true` when `self` is causally dominated by `other` across all fields.
     fn compare(&self, other: &Self) -> bool {
         self.clock.compare(&other.clock)
             && self
@@ -193,6 +218,9 @@ impl Crdt for CanvasDocument {
     }
 }
 
+/// Custom serde for `Vec<(PixelCoord, LWWRegister<Rgba>)>` used in [`CanvasDelta`].
+///
+/// Mirrors [`pixel_map_serde`] but for the delta's flat list rather than a map.
 mod pixel_vec_serde {
     use super::*;
     use serde::{Deserializer, Serializer};
@@ -232,9 +260,13 @@ pub struct CanvasDelta {
     /// the writing node. Carried as `(coord, LWWRegister)` pairs.
     #[serde(with = "pixel_vec_serde")]
     pub pixels: Vec<(PixelCoord, LWWRegister<Rgba>)>,
+    /// ORSet delta for the active-user set; empty when no users joined or left.
     pub users: ORSetDelta<Uuid>,
+    /// Cursor registers that moved since `since`; empty when no cursors changed.
     pub cursors: Vec<(Uuid, LWWRegister<PixelCoord>)>,
+    /// ORSet delta for the palette; empty when no colors were added or removed.
     pub palette: ORSetDelta<Rgba>,
+    /// GCounter delta; empty when no new paints occurred.
     pub paint_counts: <GCounter as DeltaCrdt>::Delta,
 }
 
@@ -242,10 +274,13 @@ impl DeltaCrdt for CanvasDocument {
     type Delta = CanvasDelta;
     type Version = VectorClock;
 
+    /// Returns the document's current [`VectorClock`] as its version identifier.
     fn version(&self) -> Self::Version {
         self.clock.clone()
     }
 
+    /// Compute a minimal delta containing only the changes this document has
+    /// that `since` does not. Pass [`VectorClock::new`] to get a full-state delta.
     fn delta_since(&self, since: &Self::Version) -> Self::Delta {
         let pixels: Vec<(PixelCoord, LWWRegister<Rgba>)> = self
             .pixels
@@ -279,6 +314,7 @@ impl DeltaCrdt for CanvasDocument {
         }
     }
 
+    /// Apply a previously computed delta, advancing all affected CRDTs.
     fn merge_delta(&mut self, delta: Self::Delta) {
         self.clock.merge_delta(delta.clock);
 
@@ -318,29 +354,44 @@ impl DeltaCrdt for CanvasDocument {
             && GCounter::is_empty_delta(&delta.paint_counts)
     }
 
+    /// Returns `true` when `current` causally dominates `other` — i.e., `current`
+    /// has observed everything `other` has, so it is safe to apply a delta computed
+    /// against `other` as a baseline without gaps.
     fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
         current.dominates(other)
     }
 }
 
-/// Client-facing view. Strips CRDT metadata (timestamps, node ids, vector clock).
+/// Client-facing snapshot of the full canvas. Strips CRDT metadata (timestamps, node ids, vector clock).
+///
+/// Sent once over WebSocket on connect, then superseded by [`CanvasDeltaView`] patches.
 #[derive(Serialize)]
 pub struct CanvasView {
+    /// All painted pixels keyed as `"x,y"` strings; unpainted pixels are absent (default white).
     pub pixels: HashMap<String, [u8; 4]>,
+    /// UUIDs of currently connected peers, sorted for stable display.
     pub active_peers: Vec<String>,
+    /// Shared palette colors in sorted order.
     pub palette: Vec<[u8; 4]>,
+    /// Cumulative paint operations across all peers.
     pub paint_total: u64,
+    /// Per-peer pixel ownership counts, sorted descending.
     pub leaderboard: Vec<LeaderboardEntry>,
+    /// Latest cursor position per peer, keyed by UUID string.
     pub cursors: HashMap<String, [u8; 2]>,
 }
 
+/// One row in the pixel-ownership leaderboard.
 #[derive(Serialize)]
 pub struct LeaderboardEntry {
+    /// UUID of the peer that owns these pixels (last-write winner).
     pub peer_id: String,
+    /// Number of canvas pixels currently owned by this peer.
     pub pixels: u64,
 }
 
 impl From<&CanvasDocument> for CanvasView {
+    /// Project a full [`CanvasDocument`] into a serializable snapshot, dropping all CRDT internals.
     fn from(doc: &CanvasDocument) -> Self {
         let mut active_peers: Vec<String> =
             doc.active_users().iter().map(|u| u.to_string()).collect();

@@ -36,6 +36,7 @@ enum WsMessage {
     Delta(CanvasDeltaView),
 }
 
+/// Body for `POST /api/canvas/paint`.
 #[derive(Deserialize)]
 pub struct PaintRequest {
     pub x: u8,
@@ -43,24 +44,32 @@ pub struct PaintRequest {
     pub color: [u8; 4],
 }
 
+/// Response for `GET /api/node` — identifies this peer on the network.
 #[derive(Serialize)]
 pub struct NodeInfo {
+    /// UUID of this node, assigned at startup.
     pub id: String,
+    /// Socket address this node is listening on (e.g. `"127.0.0.1:3000"`).
     pub addr: String,
 }
 
+/// Body for `POST /api/palette` and `DELETE /api/palette`.
 #[derive(Deserialize)]
 pub struct PaletteRequest {
     pub color: [u8; 4],
 }
 
+/// Body for `POST /api/canvas/cursor`.
 #[derive(Deserialize)]
 pub struct CursorRequest {
+    /// UUID of the user whose cursor is being updated.
     pub user_id: String,
     pub x: u8,
     pub y: u8,
 }
 
+/// Build the application router with all API routes, the WebSocket endpoint,
+/// and the static file fallback for the embedded Vue frontend.
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/canvas", get(get_canvas))
@@ -78,16 +87,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(CorsLayer::permissive())
 }
 
+/// `GET /api/canvas` — returns the full canvas as a [`CanvasView`] JSON snapshot.
 async fn get_canvas(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     Json(CanvasView::from(&*s.canvas()))
 }
 
+/// `POST /api/canvas/paint` — paint a single pixel; always returns `{ ok: true }`.
 async fn paint(State(s): State<Arc<AppState>>, Json(req): Json<PaintRequest>) -> impl IntoResponse {
     let color: Rgba = (req.color[0], req.color[1], req.color[2], req.color[3]);
     s.paint(req.x, req.y, color);
     Json(serde_json::json!({ "ok": true }))
 }
 
+/// `GET /api/node` — returns this node's UUID and listening address.
 async fn node_info(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     Json(NodeInfo {
         id: s.node_id().to_string(),
@@ -95,6 +107,9 @@ async fn node_info(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     })
 }
 
+/// `POST /api/canvas/cursor` — update the cursor position for a user.
+///
+/// Silently ignores requests with a malformed `user_id` UUID.
 async fn cursor(
     State(s): State<Arc<AppState>>,
     Json(req): Json<CursorRequest>,
@@ -105,6 +120,7 @@ async fn cursor(
     StatusCode::NO_CONTENT
 }
 
+/// `GET /api/palette` — returns the current shared palette as a JSON array of RGBA arrays.
 async fn get_palette(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let colors: Vec<[u8; 4]> = s
         .canvas()
@@ -115,6 +131,7 @@ async fn get_palette(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     Json(colors)
 }
 
+/// `POST /api/palette` — add a color to the shared palette; returns 201 Created.
 async fn add_palette(
     State(s): State<Arc<AppState>>,
     Json(req): Json<PaletteRequest>,
@@ -123,6 +140,9 @@ async fn add_palette(
     StatusCode::CREATED
 }
 
+/// `DELETE /api/palette` — remove a color from the shared palette.
+///
+/// Returns 204 No Content on success, 404 Not Found if the color was not in the palette.
 async fn remove_palette(
     State(s): State<Arc<AppState>>,
     Json(req): Json<PaletteRequest>,
@@ -135,6 +155,7 @@ async fn remove_palette(
     }
 }
 
+/// `GET /api/leaderboard` — returns pixel ownership counts sorted descending.
 async fn get_leaderboard(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let board: Vec<LeaderboardEntry> = s
         .canvas()
@@ -172,6 +193,7 @@ async fn static_handler(uri: axum::http::Uri) -> Response {
     }
 }
 
+/// `GET /ws` — upgrade to a WebSocket connection and hand off to [`handle_ws`].
 async fn ws_handler(State(s): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_ws(socket, s))
 }

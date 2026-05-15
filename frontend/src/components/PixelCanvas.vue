@@ -11,6 +11,9 @@
 </template>
 
 <script setup>
+// 64×64 pixel canvas rendered on a 640×640 HTML canvas element (10 px per cell).
+// Handles mouse painting with optimistic local updates and throttled cursor
+// position reporting to the backend.
 import { ref, watch, onMounted } from 'vue'
 import { useCanvasStore } from '../stores/canvas.js'
 
@@ -18,11 +21,13 @@ const store = useCanvasStore()
 const canvasEl = ref(null)
 let painting = false
 let lastCursorSend = 0
+// Minimum ms between cursor position POST requests to avoid flooding the backend.
 const CURSOR_THROTTLE_MS = 80
 
-const CELL = 10
-const SIZE = 64
+const CELL = 10  // pixels per canvas cell
+const SIZE = 64  // canvas grid dimension (cells)
 
+// Full redraw: background, painted pixels, grid lines, and peer cursors.
 function render() {
   const canvas = canvasEl.value
   if (!canvas) return
@@ -51,6 +56,7 @@ function render() {
     ctx.stroke()
   }
 
+  // Render remote peer cursors as yellow dots; skip the local client's own cursor.
   for (const [userId, pos] of store.cursors) {
     if (userId === store.clientId) continue
     ctx.fillStyle = 'rgba(255,255,0,0.7)'
@@ -60,6 +66,8 @@ function render() {
   }
 }
 
+// Paint the cell under the cursor and apply an optimistic local update so the
+// canvas reflects the change immediately without waiting for the WebSocket delta.
 function paintAt(e) {
   const x = Math.min(SIZE - 1, Math.max(0, Math.floor(e.offsetX / CELL)))
   const y = Math.min(SIZE - 1, Math.max(0, Math.floor(e.offsetY / CELL)))
@@ -72,6 +80,8 @@ function onMouseDown(e) {
   painting = true
   paintAt(e)
 }
+
+// Rate-limit cursor updates to avoid excessive POST traffic on every mousemove.
 function sendCursor(e) {
   const now = Date.now()
   if (now - lastCursorSend < CURSOR_THROTTLE_MS) return

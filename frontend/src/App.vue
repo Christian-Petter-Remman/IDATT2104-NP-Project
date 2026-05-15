@@ -25,6 +25,10 @@
 </template>
 
 <script setup>
+// Root application component.
+// Bootstraps the canvas store on mount and renders the three-panel layout:
+// top bar (NodeInfo), main canvas (PixelCanvas), and right sidebar
+// (ColorPicker, PeerList, Leaderboard).
 import { onMounted } from 'vue'
 import { useCanvasStore } from './stores/canvas.js'
 import NodeInfo from './components/NodeInfo.vue'

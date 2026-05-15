@@ -1,3 +1,8 @@
+// Pinia store for the shared CRDT canvas.
+//
+// Manages the WebSocket connection to the backend, applies snapshot and delta
+// messages to local state, and exposes actions for painting, cursor updates,
+// and palette management.
 import { defineStore } from 'pinia'
 
 // WebSocket instance lives outside Pinia state — Vue's Proxy wrapping breaks
@@ -29,10 +34,12 @@ export const useCanvasStore = defineStore('canvas', {
   },
 
   actions: {
+    // Entry point called from App.vue on mount.
     init() {
       this.connect()
     },
 
+    // Fetch this node's UUID and address from the backend; retries on failure.
     async fetchNodeInfo() {
       try {
         const r = await fetch('/api/node')
@@ -44,6 +51,8 @@ export const useCanvasStore = defineStore('canvas', {
       }
     },
 
+    // Open the WebSocket connection; skips if one is already open or connecting.
+    // Reconnects automatically after 3 s on close.
     connect() {
       if (_ws && _ws.readyState <= WebSocket.OPEN) return
       _ws = null
@@ -137,6 +146,8 @@ export const useCanvasStore = defineStore('canvas', {
       }
     },
 
+    // POST a paint operation to the backend. Errors are swallowed because the
+    // optimistic local update in PixelCanvas already reflects the change.
     async paint(x, y, color) {
       await fetch('/api/canvas/paint', {
         method: 'POST',
@@ -145,6 +156,7 @@ export const useCanvasStore = defineStore('canvas', {
       }).catch(() => {})
     },
 
+    // POST the local client's current cursor cell to the backend for broadcast.
     async updateCursor(x, y) {
       await fetch('/api/canvas/cursor', {
         method: 'POST',
@@ -153,6 +165,7 @@ export const useCanvasStore = defineStore('canvas', {
       }).catch(() => {})
     },
 
+    // Add a color to the shared palette (ORSet add-wins).
     async addColor(color) {
       await fetch('/api/palette', {
         method: 'POST',
@@ -161,6 +174,7 @@ export const useCanvasStore = defineStore('canvas', {
       }).catch(() => {})
     },
 
+    // Remove a color from the shared palette.
     async removeColor(color) {
       await fetch('/api/palette', {
         method: 'DELETE',
