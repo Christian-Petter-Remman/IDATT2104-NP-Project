@@ -72,7 +72,10 @@ impl VectorClock {
     }
 
     /// Returns `true` if `self` ≥ `other` component-wise.
-    pub(crate) fn dominates(&self, other: &Self) -> bool {
+    ///
+    /// Public so other crates implementing [`DeltaCrdt`] can reuse it in
+    /// `version_includes` without re-deriving the comparison.
+    pub fn dominates(&self, other: &Self) -> bool {
         other.clock.iter().all(|(k, v)| self.get(k) >= *v)
     }
 }
@@ -125,6 +128,10 @@ impl DeltaCrdt for VectorClock {
 
     fn is_empty_delta(delta: &Self::Delta) -> bool {
         delta.clock.is_empty()
+    }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        current.dominates(other)
     }
 }
 

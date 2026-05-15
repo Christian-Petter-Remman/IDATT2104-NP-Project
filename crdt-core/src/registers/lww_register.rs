@@ -101,6 +101,14 @@ impl<T: Clone + PartialEq> DeltaCrdt for LWWRegister<T> {
     fn is_empty_delta(delta: &Self::Delta) -> bool {
         delta.is_none()
     }
+
+    /// `(ts, node)` is included when `current` is at least as recent as
+    /// `other` under the same lex order LWW uses for tiebreaks.
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        let (cur_ts, cur_node) = *current;
+        let (oth_ts, oth_node) = *other;
+        cur_ts > oth_ts || (cur_ts == oth_ts && cur_node >= oth_node)
+    }
 }
 
 #[cfg(test)]

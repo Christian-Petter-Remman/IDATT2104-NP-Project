@@ -33,8 +33,6 @@ where
     /// Tags that have been removed, the tombstones
     /// Grows unbounded. ideally should use a GC strategy.
     removed_tags: HashSet<Tag>,
-    /// Incremented on each insert to generate unique tags
-    counter: u64,
 }
 
 #[cfg(feature = "serde")]
@@ -44,7 +42,7 @@ where
 {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut st = s.serialize_struct("ORSet", 3)?;
+        let mut st = s.serialize_struct("ORSet", 2)?;
         let entries_vec: Vec<(&T, Vec<&Tag>)> = self
             .entries
             .iter()
@@ -55,7 +53,6 @@ where
             "removed_tags",
             &self.removed_tags.iter().collect::<Vec<_>>(),
         )?;
-        st.serialize_field("counter", &self.counter)?;
         st.end()
     }
 }
@@ -70,7 +67,6 @@ where
         struct Helper<T> {
             entries: Vec<(T, Vec<Tag>)>,
             removed_tags: Vec<Tag>,
-            counter: u64,
         }
         let h = Helper::<T>::deserialize(d)?;
         Ok(ORSet {
@@ -80,7 +76,6 @@ where
                 .map(|(k, v)| (k, v.into_iter().collect()))
                 .collect(),
             removed_tags: h.removed_tags.into_iter().collect(),
-            counter: h.counter,
         })
     }
 }
@@ -93,7 +88,6 @@ where
         Self {
             entries: HashMap::new(),
             removed_tags: HashSet::new(),
-            counter: 0,
         }
     }
 }
@@ -124,7 +118,6 @@ where
     /// per-node tag frontier a sub-projection of the document's
     /// `VectorClock`, which is what [`DeltaCrdt::delta_since`] relies on.
     pub fn insert(&mut self, element: T, node_id: &NodeId, seq: u64) {
-        self.counter = self.counter.max(seq);
         let tag = Tag {
             node_id: *node_id,
             seq,
@@ -187,7 +180,7 @@ where
     /// A tag survives if it exists in either replica and
     /// is not tombstoned (in `removed_tags`) by either replica.
     ///
-    /// Consist of five steps:
+    /// Consist of four steps:
     /// 1: Combine both sides' removal knowledge.
     ///     We do this FIRST because we need the full picture
     ///     of what's been removed before deciding what survives.
@@ -196,8 +189,6 @@ where
     /// 3: Clean our own tags against the newly learned removals from step 1.
     /// 4:  If an element has zero surviving tags, it's fully removed,
     ///     and we drop it from the map.
-    /// 5: Take the higher counter so future inserts on this replica
-    ///     don't accidentally reuse a seq number.
     fn merge(&mut self, other: Self) {
         self.removed_tags.extend(other.removed_tags.iter().cloned());
 
@@ -215,20 +206,18 @@ where
         }
 
         self.entries.retain(|_, tags| !tags.is_empty());
-
-        self.counter = self.counter.max(other.counter);
     }
 }
 
 /// Sparse delta for an [`ORSet`].
 ///
-/// `adds` carries `(element, tag)` pairs whose `tag.seq` exceeds what the
-/// receiver knows for `tag.node_id`. `removed_tags` ships the sender's full
-/// tombstone set every time: tombstones never carry their own per-node
-/// sequence here, so the cheap-and-correct option is to ship them in
-/// full. The set is small in practice (the canvas app only removes
-/// palette colours), and merge is a union — applying the same set twice
-/// is a no-op.
+/// Both `adds` and `removed_tags` are filtered by the same per-node
+/// frontier: each tag carries `(node_id, seq)`, and only tags whose `seq`
+/// exceeds `since[node_id]` are shipped. This makes `is_empty_delta`
+/// truthful — once a peer has absorbed a tombstone, subsequent deltas
+/// omit it instead of re-shipping the full tombstone set every tick.
+/// Without this filtering, any removal permanently disables the
+/// `is_empty_delta` skip on the WS path and inflates idle traffic.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ORSetDelta<T>
@@ -273,19 +262,24 @@ where
     }
 
     fn delta_since(&self, since: &Self::Version) -> Self::Delta {
+        let exceeds = |tag: &Tag| -> bool {
+            tag.seq > since.get(&tag.node_id).copied().unwrap_or(0)
+        };
         let mut adds: Vec<(T, Tag)> = Vec::new();
         for (elem, tags) in &self.entries {
             for tag in tags {
-                let known = since.get(&tag.node_id).copied().unwrap_or(0);
-                if tag.seq > known {
+                if exceeds(tag) {
                     adds.push((elem.clone(), tag.clone()));
                 }
             }
         }
-        ORSetDelta {
-            adds,
-            removed_tags: self.removed_tags.clone(),
-        }
+        let removed_tags: HashSet<Tag> = self
+            .removed_tags
+            .iter()
+            .filter(|t| exceeds(t))
+            .cloned()
+            .collect();
+        ORSetDelta { adds, removed_tags }
     }
 
     fn merge_delta(&mut self, delta: Self::Delta) {
@@ -310,6 +304,12 @@ where
 
     fn is_empty_delta(delta: &Self::Delta) -> bool {
         delta.adds.is_empty() && delta.removed_tags.is_empty()
+    }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        other
+            .iter()
+            .all(|(k, v)| current.get(k).copied().unwrap_or(0) >= *v)
     }
 }
 

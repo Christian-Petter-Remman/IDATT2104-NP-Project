@@ -101,4 +101,14 @@ pub trait DeltaCrdt: Crdt {
     /// True when `delta` would not change any replica's state. Used by the
     /// network layer to skip empty broadcasts.
     fn is_empty_delta(delta: &Self::Delta) -> bool;
+
+    /// True when a replica at `current` already knows everything a peer at
+    /// `other` did. The network layer uses this on receiving a `SyncDelta`
+    /// to detect when the sender's baseline (`since`) is no longer
+    /// dominated by the receiver's state — in that case the delta must be
+    /// dropped, and the sender's next periodic full `Sync` allowed to
+    /// catch the receiver up. Without this check, a peer whose state has
+    /// regressed (restart without graceful `Goodbye`, manual reset) would
+    /// silently apply a delta computed against a version it never had.
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool;
 }

@@ -113,6 +113,10 @@ impl<T: Clone + PartialEq> DeltaCrdt for MVRegister<T> {
     fn is_empty_delta(delta: &Self::Delta) -> bool {
         delta.entries.is_empty()
     }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        current.dominates(other)
+    }
 }
 
 #[cfg(test)]

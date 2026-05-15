@@ -284,7 +284,7 @@ impl DeltaCrdt for CanvasDocument {
             users: self.users.delta_since(&or_set_version),
             cursors,
             palette: self.palette.delta_since(&or_set_version),
-            paint_counts: self.paint_counts.delta_since(&since.value()),
+            paint_counts: self.paint_counts.delta_since(&or_set_version),
         }
     }
 
@@ -325,6 +325,10 @@ impl DeltaCrdt for CanvasDocument {
             && ORSet::<Uuid>::is_empty_delta(&delta.users)
             && ORSet::<Rgba>::is_empty_delta(&delta.palette)
             && GCounter::is_empty_delta(&delta.paint_counts)
+    }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        current.dominates(other)
     }
 }
 

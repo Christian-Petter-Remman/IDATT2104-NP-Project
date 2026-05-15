@@ -95,6 +95,11 @@ impl DeltaCrdt for PNCounter {
     fn is_empty_delta(delta: &Self::Delta) -> bool {
         GCounter::is_empty_delta(&delta.increments) && GCounter::is_empty_delta(&delta.decrements)
     }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        GCounter::version_includes(&current.increments, &other.increments)
+            && GCounter::version_includes(&current.decrements, &other.decrements)
+    }
 }
 
 #[cfg(test)]
