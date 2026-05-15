@@ -2,7 +2,7 @@ use crate::canvas::{CanvasDeltaView, CanvasDocument, CanvasView, LeaderboardEntr
 use crate::state::AppState;
 use axum::{
     body::Body,
-    extract::{ws::WebSocketUpgrade, State},
+    extract::{ws::WebSocketUpgrade, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -11,6 +11,11 @@ use axum::{
 use crdt_core::DeltaCrdt;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct WsQuery {
+    id: Option<String>,
+}
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
@@ -36,6 +41,7 @@ enum WsMessage {
     Delta(CanvasDeltaView),
 }
 
+/// Body for `POST /api/canvas/paint`.
 #[derive(Deserialize)]
 pub struct PaintRequest {
     pub x: u8,
@@ -43,21 +49,37 @@ pub struct PaintRequest {
     pub color: [u8; 4],
 }
 
+/// Response for `GET /api/node` — identifies this peer on the network.
 #[derive(Serialize)]
 pub struct NodeInfo {
+    /// UUID of this node, assigned at startup.
     pub id: String,
+    /// Socket address this node is listening on (e.g. `"127.0.0.1:3000"`).
     pub addr: String,
 }
 
+/// Body for `POST /api/palette` and `DELETE /api/palette`.
 #[derive(Deserialize)]
 pub struct PaletteRequest {
     pub color: [u8; 4],
 }
 
+/// Body for `POST /api/canvas/cursor`.
+#[derive(Deserialize)]
+pub struct CursorRequest {
+    /// UUID of the user whose cursor is being updated.
+    pub user_id: String,
+    pub x: u8,
+    pub y: u8,
+}
+
+/// Build the application router with all API routes, the WebSocket endpoint,
+/// and the static file fallback for the embedded Vue frontend.
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/canvas", get(get_canvas))
         .route("/api/canvas/paint", post(paint))
+        .route("/api/canvas/cursor", post(cursor))
         .route("/api/node", get(node_info))
         .route(
             "/api/palette",
@@ -70,16 +92,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(CorsLayer::permissive())
 }
 
+/// `GET /api/canvas` — returns the full canvas as a [`CanvasView`] JSON snapshot.
 async fn get_canvas(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     Json(CanvasView::from(&*s.canvas()))
 }
 
+/// `POST /api/canvas/paint` — paint a single pixel; always returns `{ ok: true }`.
 async fn paint(State(s): State<Arc<AppState>>, Json(req): Json<PaintRequest>) -> impl IntoResponse {
     let color: Rgba = (req.color[0], req.color[1], req.color[2], req.color[3]);
     s.paint(req.x, req.y, color);
     Json(serde_json::json!({ "ok": true }))
 }
 
+/// `GET /api/node` — returns this node's UUID and listening address.
 async fn node_info(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     Json(NodeInfo {
         id: s.node_id().to_string(),
@@ -87,6 +112,24 @@ async fn node_info(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     })
 }
 
+/// `POST /api/canvas/cursor` — update the cursor position for a user.
+///
+/// `user_id` is taken from the request body without authentication; any client
+/// can move any cursor. Acceptable for this project scope (no auth layer).
+async fn cursor(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<CursorRequest>,
+) -> impl IntoResponse {
+    match Uuid::parse_str(&req.user_id) {
+        Ok(user_id) => {
+            s.update_cursor(user_id, req.x, req.y);
+            StatusCode::NO_CONTENT
+        }
+        Err(_) => StatusCode::BAD_REQUEST,
+    }
+}
+
+/// `GET /api/palette` — returns the current shared palette as a JSON array of RGBA arrays.
 async fn get_palette(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let colors: Vec<[u8; 4]> = s
         .canvas()
@@ -97,6 +140,7 @@ async fn get_palette(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     Json(colors)
 }
 
+/// `POST /api/palette` — add a color to the shared palette; returns 201 Created.
 async fn add_palette(
     State(s): State<Arc<AppState>>,
     Json(req): Json<PaletteRequest>,
@@ -105,6 +149,9 @@ async fn add_palette(
     StatusCode::CREATED
 }
 
+/// `DELETE /api/palette` — remove a color from the shared palette.
+///
+/// Returns 204 No Content on success, 404 Not Found if the color was not in the palette.
 async fn remove_palette(
     State(s): State<Arc<AppState>>,
     Json(req): Json<PaletteRequest>,
@@ -117,6 +164,7 @@ async fn remove_palette(
     }
 }
 
+/// `GET /api/leaderboard` — returns pixel ownership counts sorted descending.
 async fn get_leaderboard(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let board: Vec<LeaderboardEntry> = s
         .canvas()
@@ -154,12 +202,24 @@ async fn static_handler(uri: axum::http::Uri) -> Response {
     }
 }
 
-async fn ws_handler(State(s): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, s))
+/// `GET /ws` — upgrade to a WebSocket connection and hand off to [`handle_ws`].
+///
+/// Accepts an optional `?id=<uuid>` query parameter. The frontend passes its
+/// stable `sessionStorage` UUID so that cursor keys and `active_peers` UUIDs
+/// share the same namespace. Falls back to a fresh UUID when absent or invalid.
+async fn ws_handler(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<WsQuery>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let user_id =
+        q.id.as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .unwrap_or_else(Uuid::new_v4);
+    ws.on_upgrade(move |socket| handle_ws(socket, s, user_id))
 }
 
-async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>) {
-    let user_id = Uuid::new_v4();
+async fn handle_ws(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, user_id: Uuid) {
     state.add_user(user_id);
 
     // Send an initial full snapshot and remember the version it covers.

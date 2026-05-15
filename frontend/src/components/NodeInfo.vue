@@ -8,6 +8,7 @@
 </template>
 
 <script setup>
+// Top bar component showing this node's UUID (first 8 chars) and listen address.
 import { useCanvasStore } from '../stores/canvas.js'
 const store = useCanvasStore()
 </script>

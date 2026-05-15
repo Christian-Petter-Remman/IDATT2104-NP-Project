@@ -27,16 +27,22 @@
 </template>
 
 <script setup>
+// Palette management sidebar panel.
+// Displays shared palette swatches; click selects, right-click removes.
+// The color picker input previews and adds new colors to the shared palette.
 import { ref } from 'vue'
 import { useCanvasStore } from '../stores/canvas.js'
 
 const store = useCanvasStore()
 const colorValue = ref('#ff0000')
 
+// Convert an RGBA array to a CSS hex string (alpha channel ignored for display).
 function toHex([r, g, b]) {
   return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
 }
 
+// Parse a 6-digit hex color string into an [r, g, b, 255] array.
+// Returns null if the string is malformed or contains non-numeric channels.
 function hexToRgba(hex) {
   const clean = hex.replace('#', '')
   if (clean.length !== 6) return null
@@ -55,11 +61,13 @@ function selectColor(color) {
   store.selectedColor = color
 }
 
+// Set selected color from the picker input without adding it to the palette yet.
 function previewColor() {
   const rgba = hexToRgba(colorValue.value)
   if (rgba) store.selectedColor = rgba
 }
 
+// Add the current picker color to the shared palette.
 function addColor() {
   const rgba = hexToRgba(colorValue.value)
   if (rgba) store.addColor(rgba)

@@ -25,6 +25,10 @@
 </template>
 
 <script setup>
+// Root application component.
+// Bootstraps the canvas store on mount and renders the three-panel layout:
+// top bar (NodeInfo), main canvas (PixelCanvas), and right sidebar
+// (ColorPicker, PeerList, Leaderboard).
 import { onMounted } from 'vue'
 import { useCanvasStore } from './stores/canvas.js'
 import NodeInfo from './components/NodeInfo.vue'
@@ -34,18 +38,11 @@ import PeerList from './components/PeerList.vue'
 import Leaderboard from './components/Leaderboard.vue'
 
 const store = useCanvasStore()
-
-// Allow per-tab port selection via URL: ?port=8081. Falls back to 8080.
-// Lets two browser tabs target different backend nodes.
+// Allow per-tab port selection via URL: ?port=8081. Falls back to the page's own port.
+// Lets a Vite dev-server tab target a specific backend node for multi-node testing.
 const urlPort = Number(new URLSearchParams(window.location.search).get('port'))
-const portInput = ref(Number.isFinite(urlPort) && urlPort > 0 ? urlPort : 8080)
-
-function init() {
-  store.init(portInput.value)
-}
-
-
-onMounted(() => store.init(portInput.value))
+const port = Number.isFinite(urlPort) && urlPort > 0 ? urlPort : null
+onMounted(() => store.init(port))
 </script>
 
 <style>

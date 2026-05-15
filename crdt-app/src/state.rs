@@ -28,6 +28,10 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Create a new `AppState` with an empty canvas.
+    ///
+    /// Returns `(state, rx)` where `rx` is the initial receiver used by the gossip
+    /// engine. Additional receivers can be obtained via [`subscribe`](Self::subscribe).
     pub fn new(node_id: Uuid, addr: String) -> (Arc<Self>, watch::Receiver<CanvasDocument>) {
         let (tx, rx) = watch::channel(CanvasDocument::new());
         let state = Arc::new(Self {
@@ -38,10 +42,12 @@ impl AppState {
         (state, rx)
     }
 
+    /// This node's UUID, assigned at startup.
     pub fn node_id(&self) -> Uuid {
         self.node_id
     }
 
+    /// Socket address this node is listening on (e.g. `"127.0.0.1:3000"`).
     pub fn addr(&self) -> &str {
         &self.addr
     }
@@ -88,14 +94,17 @@ impl AppState {
 
     // Convenience wrappers used by api.rs
 
+    /// Paint pixel `(x, y)` with `color`, attributing the write to this node.
     pub fn paint(&self, x: u8, y: u8, color: Rgba) {
         self.mutate(|doc, id| doc.paint(x, y, color, id));
     }
 
+    /// Register `user` as an active peer in the ORSet.
     pub fn add_user(&self, user: Uuid) {
         self.mutate(|doc, id| doc.add_user(user, &id));
     }
 
+    /// Remove `user` from the active-peer set.
     pub fn remove_user(&self, user: &Uuid) {
         let user = *user;
         self.mutate(|doc, _| {
@@ -103,10 +112,17 @@ impl AppState {
         });
     }
 
+    /// Update the cursor position for `user`, attributing the write to this node.
+    pub fn update_cursor(&self, user: Uuid, x: u8, y: u8) {
+        self.mutate(|doc, id| doc.update_cursor(user, x, y, id));
+    }
+
+    /// Add `color` to the shared palette ORSet.
     pub fn add_palette_color(&self, color: Rgba) {
         self.mutate(|doc, id| doc.add_palette_color(color, &id));
     }
 
+    /// Remove `color` from the shared palette. Returns `true` if the color was present.
     pub fn remove_palette_color(&self, color: Rgba) -> bool {
         self.mutate(|doc, _| doc.remove_palette_color(&color))
     }

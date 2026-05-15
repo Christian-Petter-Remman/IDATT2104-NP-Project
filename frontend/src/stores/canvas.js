@@ -1,8 +1,21 @@
+// Pinia store for the shared CRDT canvas.
+//
+// Manages the WebSocket connection to the backend, applies snapshot and delta
+// messages to local state, and exposes actions for painting, cursor updates,
+// and palette management.
 import { defineStore } from 'pinia'
 
 // WebSocket instance lives outside Pinia state — Vue's Proxy wrapping breaks
 // the WebSocket internal `this instanceof WebSocket` checks.
 let _ws = null
+// Base URL for API and WS calls. Empty string = relative (embedded mode).
+// Set to 'http://host:port' when ?port= is provided (Vite dev server targeting a specific node).
+let _apiBase = ''
+
+// Stable per-tab identity used for cursor ownership. Survives page refresh
+// within the same tab via sessionStorage.
+const _storedClientId = sessionStorage.getItem('canvas-client-id') ?? crypto.randomUUID()
+sessionStorage.setItem('canvas-client-id', _storedClientId)
 
 export const useCanvasStore = defineStore('canvas', {
   state: () => ({
@@ -16,6 +29,7 @@ export const useCanvasStore = defineStore('canvas', {
     nodeId: null,
     nodeAddr: null,
     selectedColor: [0, 0, 0, 255],
+    clientId: _storedClientId,
   }),
 
   getters: {
@@ -23,13 +37,16 @@ export const useCanvasStore = defineStore('canvas', {
   },
 
   actions: {
-    init() {
+    // Entry point called from App.vue on mount.
+    init(port) {
+      if (port) _apiBase = `${location.protocol}//${location.hostname}:${port}`
       this.connect()
     },
 
+    // Fetch this node's UUID and address from the backend; retries on failure.
     async fetchNodeInfo() {
       try {
-        const r = await fetch('/api/node')
+        const r = await fetch(`${_apiBase}/api/node`)
         const d = await r.json()
         this.nodeId = d.id
         this.nodeAddr = d.addr
@@ -38,11 +55,14 @@ export const useCanvasStore = defineStore('canvas', {
       }
     },
 
+    // Open the WebSocket connection; skips if one is already open or connecting.
+    // Reconnects automatically after 3 s on close.
     connect() {
       if (_ws && _ws.readyState <= WebSocket.OPEN) return
       _ws = null
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-      _ws = new WebSocket(`${proto}//${location.host}/ws`)
+      const host = _apiBase ? new URL(_apiBase).host : location.host
+      _ws = new WebSocket(`${proto}//${host}/ws?id=${_storedClientId}`)
 
       _ws.onopen = () => {
         this.connected = true
@@ -89,6 +109,10 @@ export const useCanvasStore = defineStore('canvas', {
       }
       this.paintTotal = data.paint_total ?? 0
       this.leaderboard = data.leaderboard ?? []
+      this.cursors.clear()
+      for (const [userId, pos] of Object.entries(data.cursors ?? {})) {
+        this.cursors.set(userId, { x: pos[0], y: pos[1] })
+      }
     },
 
     // Sparse update from the backend's `CanvasDeltaView`.
@@ -120,26 +144,49 @@ export const useCanvasStore = defineStore('canvas', {
       if (data.leaderboard !== undefined) {
         this.leaderboard = data.leaderboard
       }
+      if (data.active_peers !== undefined) {
+        for (const userId of this.cursors.keys()) {
+          if (!this.activePeers.has(userId)) this.cursors.delete(userId)
+        }
+      }
+      if (data.cursors !== undefined) {
+        for (const [userId, pos] of Object.entries(data.cursors)) {
+          this.cursors.set(userId, { x: pos[0], y: pos[1] })
+        }
+      }
     },
 
+    // POST a paint operation to the backend. Errors are swallowed because the
+    // optimistic local update in PixelCanvas already reflects the change.
     async paint(x, y, color) {
-      await fetch('/api/canvas/paint', {
+      await fetch(`${_apiBase}/api/canvas/paint`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ x, y, color }),
       }).catch(() => {})
     },
 
+    // POST the local client's current cursor cell to the backend for broadcast.
+    async updateCursor(x, y) {
+      await fetch(`${_apiBase}/api/canvas/cursor`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: this.clientId, x, y }),
+      }).catch(() => {})
+    },
+
+    // Add a color to the shared palette (ORSet add-wins).
     async addColor(color) {
-      await fetch('/api/palette', {
+      await fetch(`${_apiBase}/api/palette`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ color }),
       }).catch(() => {})
     },
 
+    // Remove a color from the shared palette.
     async removeColor(color) {
-      await fetch('/api/palette', {
+      await fetch(`${_apiBase}/api/palette`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ color }),
