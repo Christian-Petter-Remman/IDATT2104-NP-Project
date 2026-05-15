@@ -123,8 +123,8 @@ impl AppState {
     /// Remove `user` from the active-peer set.
     pub fn remove_user(&self, user: &Uuid) {
         let user = *user;
-        self.mutate(|doc, _| {
-            doc.remove_user(&user);
+        self.mutate(|doc, node_id| {
+            doc.remove_user(&user, node_id);
         });
     }
 

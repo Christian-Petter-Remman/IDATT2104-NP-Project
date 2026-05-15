@@ -112,7 +112,11 @@ impl CanvasDocument {
     }
 
     /// Remove a peer from the active set and evict their cursor.
-    pub fn remove_user(&mut self, user: &Uuid) -> bool {
+    pub fn remove_user(&mut self, user: &Uuid, node_id: NodeId) -> bool {
+        // Increment the clock so the removal is visible as a new state version.
+        // Without this, delta_since returns an empty delta (clock unchanged) and
+        // connected browsers never learn the peer left.
+        self.clock.increment(node_id);
         self.cursors.remove(user);
         self.users.remove(user)
     }
@@ -480,9 +484,10 @@ impl CanvasDeltaView {
             })
             .collect::<HashMap<_, _>>();
 
-        let active_peers = if ORSet::<Uuid>::is_empty_delta(&delta.users) {
-            None
-        } else {
+        // Always ship active_peers. ORSet tombstones carry the original add-seq, so
+        // `is_empty_delta` is always true for removals that the receiver has already
+        // seen the add for — the ORSet delta cannot signal departures reliably.
+        let active_peers = {
             let mut peers: Vec<String> = doc.active_users().iter().map(|u| u.to_string()).collect();
             peers.sort();
             Some(peers)
@@ -642,7 +647,7 @@ mod tests {
 
         let mut peer_b = CanvasDocument::new();
         peer_b.add_user(user, &node(2));
-        peer_b.remove_user(&user);
+        peer_b.remove_user(&user, node(2));
 
         let mut a1 = peer_a.clone();
         a1.merge(peer_b.clone());
