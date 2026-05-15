@@ -64,6 +64,12 @@ pub struct PaletteRequest {
     pub color: [u8; 4],
 }
 
+/// Body for `POST /api/peers` — adds a runtime bootstrap peer to the gossip engine.
+#[derive(Deserialize)]
+pub struct BootstrapRequest {
+    pub addr: String,
+}
+
 /// Body for `POST /api/canvas/cursor`.
 #[derive(Deserialize)]
 pub struct CursorRequest {
@@ -85,6 +91,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/palette",
             get(get_palette).post(add_palette).delete(remove_palette),
         )
+        .route("/api/peers", post(add_peer))
         .route("/api/leaderboard", get(get_leaderboard))
         .route("/ws", get(ws_handler))
         .fallback(static_handler)
@@ -176,6 +183,65 @@ async fn get_leaderboard(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         })
         .collect();
     Json(board)
+}
+
+/// `POST /api/peers` — add a bootstrap peer to the gossip engine at runtime.
+///
+/// Body: `{"addr": "192.168.x.x:9090"}`. Returns 204 on success, 400 if the
+/// address cannot be parsed as a `SocketAddr`.
+async fn add_peer(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<BootstrapRequest>,
+) -> impl IntoResponse {
+    match req.addr.parse::<std::net::SocketAddr>() {
+        Ok(addr) => {
+            s.add_bootstrap(addr);
+            StatusCode::NO_CONTENT
+        }
+        Err(_) => StatusCode::BAD_REQUEST,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn make_app() -> Router {
+        let (state, _rx) = crate::state::AppState::new(
+            uuid::Uuid::new_v4(),
+            "0.0.0.0:8080".to_string(),
+        );
+        router(state)
+    }
+
+    #[tokio::test]
+    async fn post_peers_valid_addr_returns_no_content() {
+        let app = make_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/peers")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"addr":"127.0.0.1:9090"}"#))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn post_peers_invalid_addr_returns_bad_request() {
+        let app = make_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/peers")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"addr":"not-a-real-address"}"#))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
 }
 
 async fn static_handler(uri: axum::http::Uri) -> Response {

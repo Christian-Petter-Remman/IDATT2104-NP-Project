@@ -16,14 +16,40 @@
       </li>
     </ul>
     <div class="paint-total">Total ops: {{ store.paintTotal }}</div>
+
+    <div class="connect-form">
+      <h3>Connect to peer</h3>
+      <input
+        v-model="peerAddr"
+        class="peer-input"
+        placeholder="192.168.x.x:9090"
+        @keyup.enter="connect"
+      />
+      <button class="connect-btn" @click="connect">Connect</button>
+      <div v-if="connectMsg" :class="['connect-msg', connectStatus]">{{ connectMsg }}</div>
+    </div>
   </div>
 </template>
 
 <script setup>
-// Sidebar panel showing WebSocket connection status, active peer UUIDs,
-// and the cumulative paint-operation count received from the backend.
+import { ref } from 'vue'
 import { useCanvasStore } from '../stores/canvas.js'
+
 const store = useCanvasStore()
+
+const peerAddr = ref('')
+const connectStatus = ref('')
+const connectMsg = ref('')
+
+async function connect() {
+  const addr = peerAddr.value.trim()
+  if (!addr) return
+  const ok = await store.bootstrap(addr)
+  connectStatus.value = ok ? 'ok' : 'err'
+  connectMsg.value = ok ? 'Connecting…' : 'Invalid address'
+  if (ok) peerAddr.value = ''
+  setTimeout(() => { connectMsg.value = ''; connectStatus.value = '' }, 2000)
+}
 </script>
 
 <style scoped>
@@ -77,4 +103,45 @@ li.self {
   padding-top: 6px;
   margin-top: 4px;
 }
+.connect-form {
+  margin-top: 12px;
+  border-top: 1px solid #2a2a2a;
+  padding-top: 10px;
+}
+.peer-input {
+  width: 100%;
+  background: #111;
+  border: 1px solid #333;
+  color: #e0e0e0;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  padding: 4px 6px;
+  box-sizing: border-box;
+  margin-bottom: 6px;
+}
+.peer-input:focus {
+  outline: none;
+  border-color: #555;
+}
+.connect-btn {
+  width: 100%;
+  background: #222;
+  border: 1px solid #444;
+  color: #ccc;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  padding: 4px;
+  cursor: pointer;
+}
+.connect-btn:hover {
+  background: #2a2a2a;
+  border-color: #666;
+}
+.connect-msg {
+  margin-top: 4px;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+}
+.connect-msg.ok { color: #4f4; }
+.connect-msg.err { color: #f44; }
 </style>

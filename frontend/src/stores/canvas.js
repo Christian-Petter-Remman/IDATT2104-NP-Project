@@ -184,6 +184,16 @@ export const useCanvasStore = defineStore('canvas', {
       }).catch(() => {})
     },
 
+    // Add a bootstrap peer to the gossip engine at runtime.
+    async bootstrap(addr) {
+      const res = await fetch(`${_apiBase}/api/peers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ addr }),
+      }).catch(() => null)
+      return res?.ok ?? false
+    },
+
     // Remove a color from the shared palette.
     async removeColor(color) {
       await fetch(`${_apiBase}/api/palette`, {
