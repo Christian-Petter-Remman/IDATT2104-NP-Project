@@ -92,9 +92,6 @@ impl CanvasDocument {
         self.paint_counts.increment(node_id);
     }
 
-    // TODO: why increment clock? And should only increment by one or max?
-    // and return a bool, and for other methods as well?
-
     /// Register a peer as active. Uses ORSet add-wins semantics.
     pub fn add_user(&mut self, user: Uuid, node_id: &NodeId) {
         let seq = self.clock.increment(*node_id);
