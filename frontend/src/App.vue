@@ -38,7 +38,11 @@ import PeerList from './components/PeerList.vue'
 import Leaderboard from './components/Leaderboard.vue'
 
 const store = useCanvasStore()
-onMounted(() => store.init())
+// Allow per-tab port selection via URL: ?port=8081. Falls back to the page's own port.
+// Lets a Vite dev-server tab target a specific backend node for multi-node testing.
+const urlPort = Number(new URLSearchParams(window.location.search).get('port'))
+const port = Number.isFinite(urlPort) && urlPort > 0 ? urlPort : null
+onMounted(() => store.init(port))
 </script>
 
 <style>

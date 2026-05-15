@@ -83,6 +83,7 @@ function onMouseDown(e) {
 
 // Rate-limit cursor updates to avoid excessive POST traffic on every mousemove.
 function sendCursor(e) {
+  if (document.visibilityState !== 'visible') return
   const now = Date.now()
   if (now - lastCursorSend < CURSOR_THROTTLE_MS) return
   lastCursorSend = now
