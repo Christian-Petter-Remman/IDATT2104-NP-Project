@@ -9,11 +9,19 @@ use axum::{
     Json, Router,
 };
 use crdt_core::DeltaCrdt;
-
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
+
+/// Embeds the built Vue frontend (`frontend/dist/`) into the binary at
+/// compile time. `static_handler` serves these assets from `/`, so a
+/// single binary ships the app end-to-end. Run `npm run build --prefix
+/// frontend` before `cargo build` to populate `dist/`.
+#[derive(RustEmbed)]
+#[folder = "../frontend/dist/"]
+struct Frontend;
 
 /// Envelope for messages pushed to the browser over the WebSocket.
 ///

@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn subscribe_sees_changes() {
         let (state, _rx) = make();
-        let mut watcher = state.subscribe();
+        let watcher = state.subscribe();
         state.mutate(|doc, id| doc.paint(0, 0, (1, 2, 3, 4), id));
         assert!(watcher.has_changed().unwrap());
     }
