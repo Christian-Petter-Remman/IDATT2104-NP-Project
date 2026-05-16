@@ -27,7 +27,7 @@
 //! increment the clock for document-level causality, so a peer can
 //! tell whether it has seen a particular mutation. This is handled with
 //! [`delta_since`](DeltaCrdt::delta_since), which detect the changes.
-//! 
+//!
 //! ## Deltas
 //!
 //! The [`DeltaCrdt`] implementation lets the WebSocket layer send only
@@ -39,7 +39,7 @@
 //!
 //! Gossip between peers still uses full-state merge (simpler, handles
 //! partitions naturally).
-use crdt_core::clocks::{VectorClock};
+use crdt_core::clocks::VectorClock;
 use crdt_core::counters::GCounter;
 use crdt_core::registers::lww_register::LWWRegister;
 use crdt_core::sets::{ORSet, ORSetDelta};
@@ -138,7 +138,6 @@ impl CanvasDocument {
             .or_insert_with(|| LWWRegister::new(DEFAULT_PIXEL, 0, node_id))
             .set(color, ts, node_id);
         self.paint_counts.increment(node_id);
-
     }
 
     /// Register a peer as active. Uses ORSet add-wins semantics.
@@ -337,7 +336,7 @@ impl DeltaCrdt for CanvasDocument {
 
     /// Compute a minimal delta containing only the changes this document has
     /// that `since` does not. Pass [`VectorClock::new`] to get a full-state delta.
-    /// 
+    ///
     /// Each field filters independently against the same [`VectorClock`]
     /// frontier. This works because ORSet tag sequences are sourced from
     /// the document clock — one version covers all fields.
@@ -374,7 +373,9 @@ impl DeltaCrdt for CanvasDocument {
             // After a non-paint mutation bumps the clock, or_set_version may equal
             // the GCounter value, making delta_since return empty and losing count
             // updates via SyncDelta. Ship the full GCounter state every time instead.
-            paint_counts: self.paint_counts.delta_since(&std::collections::HashMap::new()),
+            paint_counts: self
+                .paint_counts
+                .delta_since(&std::collections::HashMap::new()),
         }
     }
 

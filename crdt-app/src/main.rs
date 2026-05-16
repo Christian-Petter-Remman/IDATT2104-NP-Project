@@ -20,7 +20,7 @@ struct Args {
     #[arg(long, default_value = "")]
     peers: String,
     /// Gossip tick interval in milliseconds. Lower values give snappier
-    /// convergence at the cost of more network chatter. 
+    /// convergence at the cost of more network chatter.
     #[arg(long, default_value_t = 200)]
     gossip_interval_ms: u64,
 }
@@ -79,8 +79,7 @@ async fn main() {
         loop {
             ticker.tick().await;
             if let Some(engine) = state_reconcile.engine() {
-                let tombstones: HashSet<Uuid> =
-                    engine.known_tombstones().into_iter().collect();
+                let tombstones: HashSet<Uuid> = engine.known_tombstones().into_iter().collect();
                 state_reconcile.remove_departed_users(&tombstones);
             }
         }
