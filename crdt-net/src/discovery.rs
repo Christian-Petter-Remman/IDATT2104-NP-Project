@@ -64,9 +64,7 @@ pub(crate) fn spawn_mdns(
                         debug!("mdns receiver closed");
                         return;
                     };
-                    if let Err(e) = handle_event(self_id, &registry, event) {
-                        warn!(error = %e, "mdns event handling failed");
-                    }
+                handle_event(self_id, &registry, event);
                 }
             }
         }
@@ -75,7 +73,7 @@ pub(crate) fn spawn_mdns(
     Ok(())
 }
 
-fn handle_event(self_id: Uuid, registry: &PeerRegistry, event: ServiceEvent) -> Result<(), String> {
+fn handle_event(self_id: Uuid, registry: &PeerRegistry, event: ServiceEvent) {
     match event {
         ServiceEvent::ServiceResolved(info) => {
             if let Some((id, addr)) = parse_peer(self_id, &info) {
@@ -84,7 +82,6 @@ fn handle_event(self_id: Uuid, registry: &PeerRegistry, event: ServiceEvent) -> 
             }
         }
         ServiceEvent::ServiceRemoved(_ty, fullname) => {
-            // Fullname is e.g. "<uuid>._crdt-net._tcp.local."
             if let Some(uuid_str) = fullname.split('.').next()
                 && let Ok(id) = Uuid::parse_str(uuid_str)
                 && id != self_id
@@ -95,7 +92,6 @@ fn handle_event(self_id: Uuid, registry: &PeerRegistry, event: ServiceEvent) -> 
         }
         _ => {}
     }
-    Ok(())
 }
 
 fn parse_peer(self_id: Uuid, info: &ServiceInfo) -> Option<(Uuid, SocketAddr)> {
