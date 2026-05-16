@@ -3,7 +3,9 @@
 //! All canvas mutations go through [`AppState::mutate`]. This file
 //! contains no domain logic, only request parsing and response
 //! serialization.
-use crate::canvas::{CanvasDeltaView, CanvasDocument, CanvasView, LeaderboardEntry, Rgba};
+use crate::canvas::{
+    CanvasDeltaView, CanvasDocument, CanvasVersion, CanvasView, LeaderboardEntry, Rgba,
+};
 use crate::state::AppState;
 use axum::extract::ws;
 use axum::{
@@ -14,7 +16,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use crate::canvas::CanvasVersion;
 use crdt_core::DeltaCrdt;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
