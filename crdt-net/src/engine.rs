@@ -134,12 +134,14 @@ impl PeerRegistry {
         if id == self.self_id {
             return;
         }
-        let mut resolved = self.resolved.lock().unwrap();
-        if let Some(addr) = resolved.remove(&id) {
+        let addr = {
+            let mut resolved = self.resolved.lock().unwrap();
+            resolved.remove(&id)
+        };
+        if let Some(addr) = addr {
             self.failure_counts.lock().unwrap().remove(&addr);
             self.last_sent.lock().unwrap().remove(&addr);
         }
-        drop(resolved);
         self.tombstones.lock().unwrap().insert(id);
     }
 
@@ -188,9 +190,13 @@ impl PeerRegistry {
         //    over with a full `Sync`.
         if !removed_addrs.is_empty() {
             let mut failures = self.failure_counts.lock().unwrap();
-            let mut sent = self.last_sent.lock().unwrap();
             for addr in &removed_addrs {
                 failures.remove(addr);
+            }
+            drop(failures);
+
+            let mut sent = self.last_sent.lock().unwrap();
+            for addr in &removed_addrs {
                 sent.remove(addr);
             }
         }
