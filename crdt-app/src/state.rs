@@ -30,7 +30,9 @@
 
 use crate::canvas::CanvasDocument;
 use crdt_core::Crdt;
-use std::sync::Arc;
+use crdt_net::GossipEngine;
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -236,6 +238,14 @@ mod tests {
         assert!(watcher.has_changed().unwrap());
     }
  
+    #[test]
+    fn paint_convenience_wrapper() {
+        let (state, rx) = make();
+        state.paint(3, 4, (10, 20, 30, 40));
+        let pixel = rx.borrow().pixels.get(&(3, 4)).map(|r| r.value());
+        assert_eq!(pixel, Some((10, 20, 30, 40)));
+    }
+
     #[test]
     fn add_bootstrap_without_engine_is_noop() {
         let (state, _rx) = make();

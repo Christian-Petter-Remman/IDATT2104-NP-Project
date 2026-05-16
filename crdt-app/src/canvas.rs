@@ -152,8 +152,7 @@ impl CanvasDocument {
     /// version. Without this, [`delta_since`](DeltaCrdt::delta_since)
     /// returns an empty delta (clock unchanged) and connected browsers
     /// never learn the peer left.
-    /// TODO: Why actualli update clock? andt the removes do this?
-    pub fn remove_user(&mut self, user: &Uuid) -> bool {
+    pub fn remove_user(&mut self, user: &Uuid, node_id: NodeId) -> bool {
         self.clock.increment(node_id);
         self.cursors.remove(user);
         self.users.remove(user)
@@ -165,14 +164,20 @@ impl CanvasDocument {
     }
 
     /// Add `color` to the shared palette using ORSet add-wins semantics.
-    /// TODO: this should return a bool if remove return a bool
     pub fn add_palette_color(&mut self, color: Rgba, node_id: &NodeId) {
         let seq = self.clock.increment(*node_id);
         self.palette.insert(color, node_id, seq);
     }
 
     /// Remove `color` from the shared palette. Returns `true` if the color was present.
-    pub fn remove_palette_color(&mut self, color: &Rgba) -> bool {
+    ///
+    /// Increments the clock so the removal is visible as a new document
+    /// version. Same logic here as with with [`remove_user`](Self::remove_user).
+    /// Without this, [`delta_since`](DeltaCrdt::delta_since) would
+    /// return an empty delta and connected browsers would never see
+    /// the color disappear.
+    pub fn remove_palette_color(&mut self, color: &Rgba, node_id: NodeId) -> bool {
+        self.clock.increment(node_id);
         self.palette.remove(color)
     }
 
@@ -223,9 +228,10 @@ impl Crdt for CanvasDocument {
     /// Cursor entries for peers no longer in the active user set are
     /// evicted. The cursor `HashMap` has no tombstone mechanism, so
     /// without this a departed peer's cursor would persist on remote
-    /// nodes indefinitely.
-    /// TODO: why dont we use a crdt with tombsones for cursors??
-
+    /// nodes indefinitely. Ideally the the ORset should have a garbage 
+    /// collection implementation to remove items from the tombsones,
+    /// but since it does not, we uses the hashmap so the cursors of 
+    /// disconnected peers don't persist indefinitely
     fn merge(&mut self, other: Self) {
         self.clock.merge(other.clock);
 
@@ -252,11 +258,11 @@ impl Crdt for CanvasDocument {
         self.palette.merge(other.palette);
         self.paint_counts.merge(other.paint_counts);
 
-        // Evict cursors for peers that left. Must happen after user merge
-        // so the active set reflects both replicas' knowledge. WHY??
+        // Evict cursor entries for peers no longer in the active set.
+        // The cursor HashMap has no tombstone mechanism, so without this a
+        // departed peer's cursor persists on remote nodes indefinitely.
         let active = self.users.value();
         self.cursors.retain(|uid, _| active.contains(uid));
-
     }
 
     /// Returns `true` when `self` is causally dominated by `other` across all fields.
@@ -402,6 +408,9 @@ impl DeltaCrdt for CanvasDocument {
 
         self.palette.merge_delta(delta.palette);
         self.paint_counts.merge_delta(delta.paint_counts);
+
+        let active = self.users.value();
+        self.cursors.retain(|uid, _| active.contains(uid));
     }
 
     fn is_empty_delta(delta: &Self::Delta) -> bool {
@@ -532,9 +541,10 @@ impl CanvasDeltaView {
             })
             .collect::<HashMap<_, _>>();
 
-        let active_peers = if ORSet::<Uuid>::is_empty_delta(&delta.users) {
-            None
-        } else {
+        // Always ship active_peers. ORSet tombstones carry the original add-seq, so
+        // `is_empty_delta` is always true for removals that the receiver has already
+        // seen the add for — the ORSet delta cannot signal departures reliably.
+        let active_peers = {
             let mut peers: Vec<String> = doc.active_users().iter().map(|u| u.to_string()).collect();
             peers.sort();
             Some(peers)
@@ -694,7 +704,7 @@ mod tests {
 
         let mut peer_b = CanvasDocument::new();
         peer_b.add_user(user, &node(2));
-        peer_b.remove_user(&user);
+        peer_b.remove_user(&user, node(2));
 
         let mut a1 = peer_a.clone();
         a1.merge(peer_b.clone());
