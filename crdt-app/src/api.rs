@@ -210,10 +210,8 @@ mod tests {
     use tower::ServiceExt;
 
     fn make_app() -> Router {
-        let (state, _rx) = crate::state::AppState::new(
-            uuid::Uuid::new_v4(),
-            "0.0.0.0:8080".to_string(),
-        );
+        let (state, _rx) =
+            crate::state::AppState::new(uuid::Uuid::new_v4(), "0.0.0.0:8080".to_string());
         router(state)
     }
 
