@@ -4,12 +4,8 @@
       Reconnecting to node...
     </div>
 
-    <div v-if="!store.nodeId" class="port-config">
-      <label>
-        API Port:
-        <input v-model.number="portInput" type="number" class="port-input" />
-      </label>
-      <button class="connect-btn" @click="init">Connect</button>
+    <div v-if="!store.nodeId" class="connecting">
+      Connecting...
     </div>
 
     <div v-else class="layout">
@@ -29,7 +25,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+// Root application component.
+// Bootstraps the canvas store on mount and renders the three-panel layout:
+// top bar (NodeInfo), main canvas (PixelCanvas), and right sidebar
+// (ColorPicker, PeerList, Leaderboard).
+import { onMounted } from 'vue'
 import { useCanvasStore } from './stores/canvas.js'
 import NodeInfo from './components/NodeInfo.vue'
 import PixelCanvas from './components/PixelCanvas.vue'
@@ -38,13 +38,11 @@ import PeerList from './components/PeerList.vue'
 import Leaderboard from './components/Leaderboard.vue'
 
 const store = useCanvasStore()
-const portInput = ref(8080)
-
-function init() {
-  store.init(portInput.value)
-}
-
-onMounted(() => store.init())
+// Allow per-tab port selection via URL: ?port=8081. Falls back to the page's own port.
+// Lets a Vite dev-server tab target a specific backend node for multi-node testing.
+const urlPort = Number(new URLSearchParams(window.location.search).get('port'))
+const port = Number.isFinite(urlPort) && urlPort > 0 ? urlPort : null
+onMounted(() => store.init(port))
 </script>
 
 <style>
@@ -70,34 +68,13 @@ body {
   font-weight: bold;
 }
 
-.port-config {
+.connecting {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 40px;
+  justify-content: center;
+  height: 100vh;
   font-size: 14px;
-}
-.port-input {
-  background: #1a1a1a;
-  border: 1px solid #333;
-  color: #e0e0e0;
-  padding: 4px 8px;
-  font-family: 'Courier New', monospace;
-  width: 80px;
-  margin-left: 6px;
-  border-radius: 2px;
-}
-.connect-btn {
-  background: #2a2a2a;
-  border: 1px solid #4af;
-  color: #4af;
-  padding: 4px 14px;
-  cursor: pointer;
-  border-radius: 2px;
-  font-family: 'Courier New', monospace;
-}
-.connect-btn:hover {
-  background: #1a3040;
+  color: #666;
 }
 
 .layout {

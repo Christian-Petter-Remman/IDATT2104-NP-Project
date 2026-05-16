@@ -1,8 +1,21 @@
+// Pinia store for the shared CRDT canvas.
+//
+// Manages the WebSocket connection to the backend, applies snapshot and delta
+// messages to local state, and exposes actions for painting, cursor updates,
+// and palette management.
 import { defineStore } from 'pinia'
 
 // WebSocket instance lives outside Pinia state — Vue's Proxy wrapping breaks
 // the WebSocket internal `this instanceof WebSocket` checks.
 let _ws = null
+// Base URL for API and WS calls. Empty string = relative (embedded mode).
+// Set to 'http://host:port' when ?port= is provided (Vite dev server targeting a specific node).
+let _apiBase = ''
+
+// Stable per-tab identity used for cursor ownership. Survives page refresh
+// within the same tab via sessionStorage.
+const _storedClientId = sessionStorage.getItem('canvas-client-id') ?? crypto.randomUUID()
+sessionStorage.setItem('canvas-client-id', _storedClientId)
 
 export const useCanvasStore = defineStore('canvas', {
   state: () => ({
@@ -15,8 +28,8 @@ export const useCanvasStore = defineStore('canvas', {
     connected: false,
     nodeId: null,
     nodeAddr: null,
-    apiPort: 8080,
     selectedColor: [0, 0, 0, 255],
+    clientId: _storedClientId,
   }),
 
   getters: {
@@ -24,40 +37,50 @@ export const useCanvasStore = defineStore('canvas', {
   },
 
   actions: {
-    async init(port) {
-      if (port) this.apiPort = port
-      try {
-        const res = await fetch(`http://localhost:${this.apiPort}/api/node`)
-        const data = await res.json()
-        this.nodeId = data.id
-        this.nodeAddr = data.addr
-      } catch {
-        // backend not ready yet; will retry via reconnect
-      }
+    // Entry point called from App.vue on mount.
+    init(port) {
+      if (port) _apiBase = `${location.protocol}//${location.hostname}:${port}`
       this.connect()
     },
 
+    // Fetch this node's UUID and address from the backend; retries on failure.
+    async fetchNodeInfo() {
+      try {
+        const r = await fetch(`${_apiBase}/api/node`)
+        const d = await r.json()
+        this.nodeId = d.id
+        this.nodeAddr = d.addr
+      } catch {
+        setTimeout(() => this.fetchNodeInfo(), 3000)
+      }
+    },
+
+    // Open the WebSocket connection; skips if one is already open or connecting.
+    // Reconnects automatically after 3 s on close.
     connect() {
-      if (_ws) return
-      _ws = new WebSocket(`ws://localhost:${this.apiPort}/ws`)
+      if (_ws && _ws.readyState <= WebSocket.OPEN) return
+      _ws = null
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const host = _apiBase ? new URL(_apiBase).host : location.host
+      _ws = new WebSocket(`${proto}//${host}/ws?id=${_storedClientId}`)
 
       _ws.onopen = () => {
         this.connected = true
-        // Fetch node info if not yet populated (connect may fire before init resolves)
-        if (!this.nodeId) {
-          fetch(`http://localhost:${this.apiPort}/api/node`)
-            .then(r => r.json())
-            .then(d => { this.nodeId = d.id; this.nodeAddr = d.addr })
-            .catch(() => {})
-        }
+        if (!this.nodeId) this.fetchNodeInfo()
       }
 
       _ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data)
-        if (msg.type === 'diff') {
-          this._applyDiff(msg)
+        // Backend wraps state in `{type, payload}`.
+        const data = msg.payload ?? msg
+        if (msg.type === 'snapshot') {
+          this._applySnapshot(data)
+        } else if (msg.type === 'delta') {
+          this._applyDelta(data)
         } else {
-          this._applySnapshot(msg)
+          // Unknown type: don't silently apply as a snapshot — that
+          // masked decode errors and stale frames in earlier versions.
+          console.warn('[canvas] dropped WS message with unknown type:', msg.type)
         }
       }
 
@@ -70,92 +93,100 @@ export const useCanvasStore = defineStore('canvas', {
       _ws.onerror = () => _ws && _ws.close()
     },
 
-    _applySnapshot(msg) {
-      // pixels: [{x, y, color}] or object map
+    // Full canvas state. Replaces every collection wholesale.
+    _applySnapshot(data) {
       this.pixels.clear()
-      if (Array.isArray(msg.pixels)) {
-        for (const p of msg.pixels) {
-          this.pixels.set(`${p.x},${p.y}`, p.color)
-        }
-      } else if (msg.pixels && typeof msg.pixels === 'object') {
-        // object keyed by "x,y" → [r,g,b,a]
-        for (const [key, color] of Object.entries(msg.pixels)) {
-          this.pixels.set(key, color)
-        }
+      for (const [key, color] of Object.entries(data.pixels ?? {})) {
+        this.pixels.set(key, color)
       }
-
-      // palette: [[r,g,b,a], ...]
       this.palette.clear()
-      for (const color of (msg.palette ?? [])) {
+      for (const color of (data.palette ?? [])) {
         this.palette.add(JSON.stringify(color))
       }
-
-      // users: [uuid, ...]
       this.activePeers.clear()
-      for (const peer of (msg.users ?? [])) {
+      for (const peer of (data.active_peers ?? [])) {
         this.activePeers.add(peer)
       }
-
-      // paint_total from GCounter value or direct field
-      this.paintTotal = msg.paint_total ?? msg.paint_counts?.value ?? 0
-
-      // leaderboard
-      this.leaderboard = msg.leaderboard ?? []
+      this.paintTotal = data.paint_total ?? 0
+      this.leaderboard = data.leaderboard ?? []
+      this.cursors.clear()
+      for (const [userId, pos] of Object.entries(data.cursors ?? {})) {
+        this.cursors.set(userId, { x: pos[0], y: pos[1] })
+      }
     },
 
-    _applyDiff(msg) {
-      if (msg.pixels) {
-        for (const p of msg.pixels) {
-          this.pixels.set(`${p.x},${p.y}`, p.color)
-        }
+    // Sparse update from the backend's `CanvasDeltaView`.
+    //
+    // `pixels` carries only the cells that changed and is patched into
+    // the existing Map (no clear). The other fields are present only
+    // when their underlying CRDT changed — when present, replace the
+    // whole collection (the backend ships the full derived view for
+    // these to keep the projection simple).
+    _applyDelta(data) {
+      for (const [key, color] of Object.entries(data.pixels ?? {})) {
+        this.pixels.set(key, color)
       }
-      if (msg.palette_add) {
-        for (const color of msg.palette_add) {
-          this.palette.add(JSON.stringify(color))
-        }
-      }
-      if (msg.palette_rm) {
-        for (const color of msg.palette_rm) {
-          this.palette.delete(JSON.stringify(color))
-        }
-      }
-      if (msg.cursors) {
-        for (const c of msg.cursors) {
-          this.cursors.set(c.user_id, { x: c.x, y: c.y })
-        }
-      }
-      if (msg.active_peers) {
+      if (data.active_peers !== undefined) {
         this.activePeers.clear()
-        for (const peer of msg.active_peers) {
+        for (const peer of data.active_peers) {
           this.activePeers.add(peer)
         }
       }
-      if (msg.paint_total != null) {
-        this.paintTotal = msg.paint_total
+      if (data.palette !== undefined) {
+        this.palette.clear()
+        for (const color of data.palette) {
+          this.palette.add(JSON.stringify(color))
+        }
       }
-      if (msg.leaderboard) {
-        this.leaderboard = msg.leaderboard
+      if (data.paint_total !== undefined) {
+        this.paintTotal = data.paint_total
+      }
+      if (data.leaderboard !== undefined) {
+        this.leaderboard = data.leaderboard
+      }
+      if (data.active_peers !== undefined) {
+        for (const userId of this.cursors.keys()) {
+          if (!this.activePeers.has(userId)) this.cursors.delete(userId)
+        }
+      }
+      if (data.cursors !== undefined) {
+        for (const [userId, pos] of Object.entries(data.cursors)) {
+          this.cursors.set(userId, { x: pos[0], y: pos[1] })
+        }
       }
     },
 
+    // POST a paint operation to the backend. Errors are swallowed because the
+    // optimistic local update in PixelCanvas already reflects the change.
     async paint(x, y, color) {
-      await fetch(`http://localhost:${this.apiPort}/api/canvas/paint`, {
+      await fetch(`${_apiBase}/api/canvas/paint`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ x, y, color }),
       }).catch(() => {})
     },
 
+    // POST the local client's current cursor cell to the backend for broadcast.
+    async updateCursor(x, y) {
+      await fetch(`${_apiBase}/api/canvas/cursor`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: this.clientId, x, y }),
+      }).catch(() => {})
+    },
+
+    // Add a color to the shared palette (ORSet add-wins).
     async addColor(color) {
-      await fetch(`http://localhost:${this.apiPort}/api/palette`, {
+      await fetch(`${_apiBase}/api/palette`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ color }),
       }).catch(() => {})
     },
 
+    // Remove a color from the shared palette.
     async removeColor(color) {
-      await fetch(`http://localhost:${this.apiPort}/api/palette`, {
+      await fetch(`${_apiBase}/api/palette`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ color }),

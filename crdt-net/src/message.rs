@@ -24,19 +24,40 @@ pub struct PeerEntry {
 /// Wire-level gossip message.
 ///
 /// `Sync` carries the sender's full CRDT state plus membership/tombstone
-/// hints. `Goodbye` is a state-free farewell that just propagates
-/// tombstones — it lets a peer leave the mesh cleanly without forcing
-/// callers to also serialize a final state snapshot.
+/// hints — used for the initial exchange with a fresh peer. `SyncDelta`
+/// carries only the part of state the receiver did not yet have, computed
+/// against a remembered version. `Goodbye` is a state-free farewell that
+/// just propagates tombstones — it lets a peer leave the mesh cleanly
+/// without forcing callers to also serialize a final state snapshot.
 ///
 /// The `T` parameter on `Goodbye` is phantom: the variant has no field
 /// that uses it, so a sender can construct
 /// `GossipMessage::<()>::Goodbye {...}` and any receiver will decode the
 /// same bytes regardless of which `T` they parameterize with.
+///
+/// The `SyncDelta` `delta` and `since` payloads are kept as
+/// [`serde_json::Value`] so the wire enum stays generic in a single `T`
+/// parameter. The engine deserializes them into `T::Delta` and
+/// `T::Version` when it processes the message; mismatched types surface
+/// as a decode error rather than a panic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GossipMessage<T> {
     Sync {
         from: PeerEntry,
         state: T,
+        known_peers: Vec<PeerEntry>,
+        departed: Vec<Uuid>,
+    },
+    SyncDelta {
+        from: PeerEntry,
+        /// JSON-encoded `T::Delta` from the sender. Decoded by the engine
+        /// at receive time.
+        delta: serde_json::Value,
+        /// JSON-encoded `T::Version` describing what the sender treated
+        /// as the receiver's known frontier. A receiver whose current
+        /// version is not dominated by `since` drops the delta and waits
+        /// for a fresh `Sync`.
+        since: serde_json::Value,
         known_peers: Vec<PeerEntry>,
         departed: Vec<Uuid>,
     },

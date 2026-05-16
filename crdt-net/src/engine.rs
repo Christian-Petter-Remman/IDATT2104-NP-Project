@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crdt_core::Crdt;
+use crdt_core::DeltaCrdt;
 use rand::seq::IteratorRandom;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::net::{TcpListener, TcpStream};
@@ -68,6 +68,12 @@ pub(crate) struct PeerRegistry {
     bootstraps: Mutex<HashSet<SocketAddr>>,
     tombstones: Mutex<HashSet<Uuid>>,
     failure_counts: Mutex<HashMap<SocketAddr, u32>>,
+    /// JSON-encoded `T::Version` last successfully sent to each peer
+    /// address. Drives the choice between `Sync` (full state) on the
+    /// first contact and `SyncDelta` (incremental) on later ticks. Keyed
+    /// by `SocketAddr` rather than `Uuid` so unresolved bootstraps and
+    /// resolved peers share the same code path.
+    last_sent: Mutex<HashMap<SocketAddr, serde_json::Value>>,
 }
 
 impl PeerRegistry {
@@ -79,7 +85,19 @@ impl PeerRegistry {
             bootstraps: Mutex::new(HashSet::new()),
             tombstones: Mutex::new(HashSet::new()),
             failure_counts: Mutex::new(HashMap::new()),
+            last_sent: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Returns the JSON-encoded `T::Version` we last successfully delivered
+    /// to `addr`, or `None` if we have never gossiped to this address.
+    pub(crate) fn last_sent_version(&self, addr: SocketAddr) -> Option<serde_json::Value> {
+        self.last_sent.lock().unwrap().get(&addr).cloned()
+    }
+
+    /// Record the version that just left the wire for `addr`.
+    pub(crate) fn record_sent_version(&self, addr: SocketAddr, version: serde_json::Value) {
+        self.last_sent.lock().unwrap().insert(addr, version);
     }
 
     pub(crate) fn add_resolved(&self, id: Uuid, addr: SocketAddr) {
@@ -119,6 +137,7 @@ impl PeerRegistry {
         let mut resolved = self.resolved.lock().unwrap();
         if let Some(addr) = resolved.remove(&id) {
             self.failure_counts.lock().unwrap().remove(&addr);
+            self.last_sent.lock().unwrap().remove(&addr);
         }
         drop(resolved);
         self.tombstones.lock().unwrap().insert(id);
@@ -163,11 +182,16 @@ impl PeerRegistry {
                 .filter_map(|id| resolved.remove(id))
                 .collect()
         };
-        // 3. Clear failure counts for removed addresses.
+        // 3. Clear failure counts and last-sent versions for removed
+        //    addresses. Tombstoning drops the trust we had in the prior
+        //    delta high-water mark — a future re-resolution must start
+        //    over with a full `Sync`.
         if !removed_addrs.is_empty() {
             let mut failures = self.failure_counts.lock().unwrap();
-            for addr in removed_addrs {
-                failures.remove(&addr);
+            let mut sent = self.last_sent.lock().unwrap();
+            for addr in &removed_addrs {
+                failures.remove(addr);
+                sent.remove(addr);
             }
         }
     }
@@ -205,8 +229,10 @@ impl PeerRegistry {
             return Some(id);
         }
 
-        // Otherwise it's an unresolved bootstrap — drop it silently.
+        // Otherwise it's an unresolved bootstrap — drop it silently and
+        // forget any delta watermark we held for it.
         self.bootstraps.lock().unwrap().remove(&addr);
+        self.last_sent.lock().unwrap().remove(&addr);
         None
     }
 
@@ -293,7 +319,9 @@ impl GossipEngine {
         merged: broadcast::Sender<T>,
     ) -> io::Result<Self>
     where
-        T: Crdt + Serialize + DeserializeOwned + Send + Sync + 'static,
+        T: DeltaCrdt + Serialize + DeserializeOwned + Send + Sync + 'static,
+        T::Delta: Serialize + DeserializeOwned + Send + Sync + 'static,
+        T::Version: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
         let listener = TcpListener::bind(config.gossip_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -436,7 +464,9 @@ fn spawn_listener<T>(
     registry: Arc<PeerRegistry>,
     shutdown: Arc<Notify>,
 ) where
-    T: Crdt + Serialize + DeserializeOwned + Send + Sync + 'static,
+    T: DeltaCrdt + Serialize + DeserializeOwned + Send + Sync + 'static,
+    T::Delta: Serialize + DeserializeOwned + Send + Sync + 'static,
+    T::Version: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     tokio::spawn(async move {
@@ -484,7 +514,9 @@ async fn handle_connection<T>(
     merged: broadcast::Sender<T>,
     registry: Arc<PeerRegistry>,
 ) where
-    T: Crdt + Serialize + DeserializeOwned + Send + Sync + 'static,
+    T: DeltaCrdt + Serialize + DeserializeOwned + Send + Sync + 'static,
+    T::Delta: Serialize + DeserializeOwned + Send + Sync + 'static,
+    T::Version: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     // Cap how long a single connection can keep this task alive. A peer
     // that opens TCP and never sends data (or only sends a partial header)
@@ -512,6 +544,55 @@ async fn handle_connection<T>(
             merged_value.merge(state);
             let _ = merged.send(merged_value);
         }
+        Ok(Ok(GossipMessage::SyncDelta {
+            from,
+            delta,
+            since,
+            known_peers,
+            departed,
+        })) => {
+            // Decode the sender's baseline first. If our local state is
+            // not at least as advanced as that baseline, the delta was
+            // computed against state we never had — applying it would
+            // silently miss intervening updates. Drop and wait for the
+            // sender's next periodic full `Sync` to catch us up.
+            let typed_since: T::Version = match serde_json::from_value(since) {
+                Ok(v) => v,
+                Err(e) => {
+                    trace!(error = %e, %peer, "discarding SyncDelta with malformed `since`");
+                    return;
+                }
+            };
+            let local_value = local.borrow().clone();
+            if !T::version_includes(&local_value.version(), &typed_since) {
+                trace!(
+                    %peer,
+                    sender = %from.node_id,
+                    "dropping SyncDelta — local state behind sender's baseline, waiting for full Sync"
+                );
+                return;
+            }
+            // Decode the typed delta. A type mismatch surfaces as a
+            // decode error and we drop the frame — the sender's next
+            // tick falls back to a full `Sync` automatically once the
+            // peer is re-resolved.
+            let typed_delta: T::Delta = match serde_json::from_value(delta) {
+                Ok(d) => d,
+                Err(e) => {
+                    trace!(error = %e, %peer, "discarding malformed SyncDelta payload");
+                    return;
+                }
+            };
+            debug!(%peer, sender = %from.node_id, "received SyncDelta, merging");
+            registry.absorb_tombstones(&departed);
+            registry.add_resolved(from.node_id, from.addr);
+            for entry in known_peers {
+                registry.add_resolved(entry.node_id, entry.addr);
+            }
+            let mut merged_value = local_value;
+            merged_value.merge_delta(typed_delta);
+            let _ = merged.send(merged_value);
+        }
         Ok(Ok(GossipMessage::Goodbye {
             from,
             departed,
@@ -537,7 +618,9 @@ fn spawn_ticker<T>(
     interval: Duration,
     shutdown: Arc<Notify>,
 ) where
-    T: Crdt + Serialize + Send + Sync + 'static,
+    T: DeltaCrdt + Serialize + Send + Sync + 'static,
+    T::Delta: Serialize + Send + Sync + 'static,
+    T::Version: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     tokio::spawn(async move {
         let mut ticker = time::interval(interval);
@@ -552,6 +635,7 @@ fn spawn_ticker<T>(
                 }
                 _ = ticker.tick() => {
                     let snapshot = local.borrow().clone();
+                    let current_version = snapshot.version();
                     let (all_targets, known_peers, departed) = registry.gossip_snapshot();
                     let chosen: Vec<SocketAddr> = {
                         let mut rng = rand::thread_rng();
@@ -559,15 +643,69 @@ fn spawn_ticker<T>(
                     };
                     let from = PeerEntry { node_id: self_id, addr: advertise_addr };
                     for addr in chosen {
-                        let payload = snapshot.clone();
                         let from = from.clone();
                         let known = known_peers.clone();
                         let dep = departed.clone();
                         let registry = registry.clone();
+
+                        // Decide per-peer: full `Sync` on first contact,
+                        // `SyncDelta` thereafter. We do NOT short-circuit
+                        // on `is_empty_delta` — even when the CRDT state
+                        // hasn't moved, each tick still carries the
+                        // current `known_peers` and `departed` lists,
+                        // which is how tombstones propagate through the
+                        // mesh.
+                        let prev_version: Option<T::Version> = registry
+                            .last_sent_version(addr)
+                            .and_then(|v| serde_json::from_value(v).ok());
+                        let mode = match prev_version {
+                            None => SendMode::Full(snapshot.clone()),
+                            // Ship the *receiver's prior baseline* (`prev`)
+                            // as `since`. The receiver uses this to verify
+                            // its local state already includes the
+                            // baseline before applying the delta — if not,
+                            // it drops the frame and waits for a full
+                            // `Sync`. Shipping `current_version` here
+                            // (sender's new state) would always fail that
+                            // check whenever the sender pulled ahead,
+                            // which is precisely when deltas matter.
+                            Some(prev) => SendMode::Delta(
+                                snapshot.delta_since(&prev),
+                                prev.clone(),
+                            ),
+                        };
+
+                        // `next_version` reflects the snapshot at tick
+                        // time, not the state at send-completion time.
+                        // In the gap between tick and ack the local
+                        // state may have advanced further, but the
+                        // watermark only needs to mark "what the peer
+                        // is known to have absorbed." Recording too low
+                        // is corrected on the next tick (the next
+                        // delta covers the gap); recording too high
+                        // would be the bug — the receiver's
+                        // `version_includes` check drops frames whose
+                        // `since` baseline we never had.
+                        let next_version = current_version.clone();
                         tokio::spawn(async move {
-                            match send_sync::<T>(addr, from, payload, known, dep).await {
+                            let send_result = match mode {
+                                SendMode::Full(state) => {
+                                    send_sync::<T>(addr, from, state, known, dep).await
+                                }
+                                SendMode::Delta(delta, since) => {
+                                    send_sync_delta::<T>(addr, from, delta, since, known, dep)
+                                        .await
+                                }
+                            };
+                            match send_result {
                                 Ok(()) => {
                                     registry.mark_success(addr);
+                                    // Record what the peer now knows so
+                                    // the next tick can ship a fresh
+                                    // delta on top of it.
+                                    if let Ok(v) = serde_json::to_value(&next_version) {
+                                        registry.record_sent_version(addr, v);
+                                    }
                                     debug!(%addr, "gossip send ok");
                                 }
                                 Err(e) => {
@@ -584,6 +722,13 @@ fn spawn_ticker<T>(
             }
         }
     });
+}
+
+/// Per-tick decision: ship the full state to a new peer, or just the
+/// delta against what they last acknowledged.
+enum SendMode<T: DeltaCrdt> {
+    Full(T),
+    Delta(T::Delta, T::Version),
 }
 
 fn resolve_advertise_addr(config: &GossipConfig, bound: SocketAddr) -> SocketAddr {
@@ -619,6 +764,34 @@ where
     let msg = GossipMessage::Sync {
         from,
         state,
+        known_peers,
+        departed,
+    };
+    write_frame(&mut stream, &msg).await
+}
+
+async fn send_sync_delta<T>(
+    addr: SocketAddr,
+    from: PeerEntry,
+    delta: T::Delta,
+    since: T::Version,
+    known_peers: Vec<PeerEntry>,
+    departed: Vec<Uuid>,
+) -> io::Result<()>
+where
+    T: DeltaCrdt + Serialize + Send + Sync,
+    T::Delta: Serialize,
+    T::Version: Serialize,
+{
+    let delta_value = serde_json::to_value(&delta).map_err(io::Error::other)?;
+    let since_value = serde_json::to_value(&since).map_err(io::Error::other)?;
+    let mut stream = time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connect timeout"))??;
+    let msg: GossipMessage<T> = GossipMessage::SyncDelta {
+        from,
+        delta: delta_value,
+        since: since_value,
         known_peers,
         departed,
     };

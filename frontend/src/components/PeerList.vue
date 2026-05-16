@@ -20,6 +20,8 @@
 </template>
 
 <script setup>
+// Sidebar panel showing WebSocket connection status, active peer UUIDs,
+// and the cumulative paint-operation count received from the backend.
 import { useCanvasStore } from '../stores/canvas.js'
 const store = useCanvasStore()
 </script>

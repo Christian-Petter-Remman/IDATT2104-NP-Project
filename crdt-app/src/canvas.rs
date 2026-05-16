@@ -5,7 +5,7 @@
 //! aspect of the shared canvas, and a [`VectorClock`] that ties them
 //! together.
 //!
-//! # How the VectorClock fits in
+//! ## How the VectorClock fits in
 //!
 //! The clock serves two roles:
 //!
@@ -25,38 +25,84 @@
 //! Mutations that don't need an LWW timestamp (e.g. [`add_user`],
 //! which goes through [`ORSet`] with its own internal tagging) still
 //! increment the clock for document-level causality, so a peer can
-//! tell whether it has seen a particular mutation.
-
-use crdt_core::clocks::VectorClock;
+//! tell whether it has seen a particular mutation. This is handled with
+//! [`delta_since`](DeltaCrdt::delta_since), which detect the changes.
+//! 
+//! ## Deltas
+//!
+//! The [`DeltaCrdt`] implementation lets the WebSocket layer send only
+//! what changed since each client's last known version, instead of the
+//! full document on every mutation. Each CRDT field computes its own
+//! delta independently, all keyed off the same [`VectorClock`] frontier.
+//! This works because ORSet tag sequences are sourced from the document
+//! clock, so one version covers all fields.
+//!
+//! Gossip between peers still uses full-state merge (simpler, handles
+//! partitions naturally).
+use crdt_core::clocks::{VectorClock, GCounter};
 use crdt_core::registers::lww_register::LWWRegister;
-use crdt_core::sets::ORSet;
-use crdt_core::traits::{Crdt, NodeId};
+use crdt_core::sets::{ORSet, ORSetDelta};
+use crdt_core::traits::{Crdt, DeltaCrdt, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+/// RGBA color stored as four `u8` channels: red, green, blue, alpha.
 pub type Rgba = (u8, u8, u8, u8);
-/// Canvas is bounded to 256×256 by u8 coordinates.
+/// Canvas pixel coordinate. Both axes are bounded to `[0, 255]` by the `u8` type.
 pub type PixelCoord = (u8, u8);
+/// Color written to pixels that have never been painted (opaque white).
 pub const DEFAULT_PIXEL: Rgba = (255, 255, 255, 255);
+
+/// Custom serde for `HashMap<PixelCoord, LWWRegister<Rgba>>`.
+///
+/// Tuple keys are not valid JSON object keys, so the map is serialized as a
+/// sequence of `(key, value)` pairs and deserialized back into a `HashMap`.
+mod pixel_map_serde {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(
+        map: &HashMap<PixelCoord, LWWRegister<Rgba>>,
+        s: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(map.len()))?;
+        for pair in map.iter() {
+            seq.serialize_element(&pair)?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<HashMap<PixelCoord, LWWRegister<Rgba>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<(PixelCoord, LWWRegister<Rgba>)>::deserialize(d).map(|v| v.into_iter().collect())
+    }
+}
 
 /// The shared state gossiped between peers.
 ///
 /// Every field is a CRDT with its own merge semantics:
 /// - `pixels`: per-coordinate [`LWWRegister`], last writer wins.
-/// - `users`: [`ORSet`] of active peer UUIDs, add-wins on concurrent
-///   add/remove.
-/// - `cursors`: per-user [`LWWRegister`] of cursor position, last
-///   writer wins.
-/// - `clock`: [`VectorClock`] tracking across all of the
-///   above. Merged alongside the other fields so timestamps stay
-///   consistent across peers.
+/// - `users`: [`ORSet`] of active peer UUIDs, add-wins on concurrent add/remove.
+/// - `cursors`: per-user [`LWWRegister`] of cursor position, last writer wins.
+/// - `palette`: [`ORSet`] of active palette colors, add-wins.
+/// - `paint_counts`: [`GCounter`] tracking total paints per node.
+/// - `clock`: [`VectorClock`] tracking causality across all of the above.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CanvasDocument {
+    #[serde(with = "pixel_map_serde")]
     pub pixels: HashMap<PixelCoord, LWWRegister<Rgba>>,
     users: ORSet<Uuid>,
     pub cursors: HashMap<Uuid, LWWRegister<PixelCoord>>,
+    pub palette: ORSet<Rgba>,
+    pub paint_counts: GCounter,
     clock: VectorClock,
 }
 
@@ -66,12 +112,15 @@ impl Default for CanvasDocument {
             pixels: HashMap::new(),
             users: ORSet::new(),
             cursors: HashMap::new(),
+            palette: ORSet::new(),
+            paint_counts: GCounter::new(),
             clock: VectorClock::new(),
         }
     }
 }
 
 impl CanvasDocument {
+    /// Create an empty canvas with no pixels, users, palette entries, or paint counts.
     pub fn new() -> Self {
         Self::default()
     }
@@ -87,17 +136,26 @@ impl CanvasDocument {
             .entry((x, y))
             .or_insert_with(|| LWWRegister::new(DEFAULT_PIXEL, 0, node_id))
             .set(color, ts, node_id);
+        self.paint_counts.increment(node_id);
+
     }
 
-    /// Register a peer as active. Uses ORSet add-wins semantics: a
-    /// concurrent add and remove resolves in favour of the add.
+    /// Register a peer as active. Uses ORSet add-wins semantics.
     pub fn add_user(&mut self, user: Uuid, node_id: &NodeId) {
-        self.clock.increment(*node_id);
-        self.users.insert(user, node_id);
+        let seq = self.clock.increment(*node_id);
+        self.users.insert(user, node_id, seq);
     }
 
-    /// Remove a peer from the active set.
+    /// Remove a peer from the active set and evict their cursor.
+    ///
+    /// Increments the clock so the removal shows up as a new document
+    /// version. Without this, [`delta_since`](DeltaCrdt::delta_since)
+    /// returns an empty delta (clock unchanged) and connected browsers
+    /// never learn the peer left.
+    /// TODO: Why actualli update clock? andt the removes do this?
     pub fn remove_user(&mut self, user: &Uuid) -> bool {
+        self.clock.increment(node_id);
+        self.cursors.remove(user);
         self.users.remove(user)
     }
 
@@ -106,15 +164,36 @@ impl CanvasDocument {
         self.users.value()
     }
 
-    pub fn max_pixel_timestamp(&self) -> u64 {
-        self.pixels
-            .values()
-            .map(|r| r.timestamp())
-            .max()
-            .unwrap_or(0)
+    /// Add `color` to the shared palette using ORSet add-wins semantics.
+    /// TODO: this should return a bool if remove return a bool
+    pub fn add_palette_color(&mut self, color: Rgba, node_id: &NodeId) {
+        let seq = self.clock.increment(*node_id);
+        self.palette.insert(color, node_id, seq);
     }
 
-    // TODO: wire cursor updates via API once crdt-net gossip is integrated. Done maybe?
+    /// Remove `color` from the shared palette. Returns `true` if the color was present.
+    pub fn remove_palette_color(&mut self, color: &Rgba) -> bool {
+        self.palette.remove(color)
+    }
+
+    /// Returns palette colors sorted for deterministic display order.
+    pub fn palette_colors(&self) -> Vec<Rgba> {
+        let mut colors: Vec<Rgba> = self.palette.value().into_iter().collect();
+        colors.sort();
+        colors
+    }
+
+    /// Returns `(node_id, pixel_count)` pairs sorted descending by pixel ownership.
+    pub fn ownership_leaderboard(&self) -> Vec<(NodeId, u64)> {
+        let mut counts: HashMap<NodeId, u64> = HashMap::new();
+        for reg in self.pixels.values() {
+            *counts.entry(reg.node_id()).or_insert(0) += 1;
+        }
+        let mut result: Vec<(NodeId, u64)> = counts.into_iter().collect();
+        result.sort_by_key(|b| std::cmp::Reverse(b.1));
+        result
+    }
+
     /// Update a peer's cursor position.
     pub fn update_cursor(&mut self, user: Uuid, x: u8, y: u8, node_id: NodeId) {
         let ts = self.clock.increment(node_id);
@@ -128,16 +207,25 @@ impl CanvasDocument {
 impl Crdt for CanvasDocument {
     type Value = Self;
 
+    /// The document is its own value — clones the full state.
     fn value(&self) -> Self {
         self.clone()
     }
 
-    /// Merge another replica into this one.
+    /// Merge `other` into `self` using each field's own CRDT merge rule.
     ///
-    /// Each field merges independently. Pixels and cursors by
-    /// LWW per key, users by ORSet add-wins, clock by element-wise
-    /// max. After merge, the clock reflects all events both replicas
-    /// have seen.
+    /// Each of the field will merge inpepentendly.
+    /// - Clock: element-wise max (Lamport rule per node).
+    /// - Pixels / cursors: LWW — higher timestamp wins per coordinate.
+    /// - Users / palette: ORSet — add-wins on concurrent add/remove.
+    /// - Paint counts: GCounter — per-node max.
+    /// 
+    /// Cursor entries for peers no longer in the active user set are
+    /// evicted. The cursor `HashMap` has no tombstone mechanism, so
+    /// without this a departed peer's cursor would persist on remote
+    /// nodes indefinitely.
+    /// TODO: why dont we use a crdt with tombsones for cursors??
+
     fn merge(&mut self, other: Self) {
         self.clock.merge(other.clock);
 
@@ -160,8 +248,18 @@ impl Crdt for CanvasDocument {
                 }
             }
         }
+
+        self.palette.merge(other.palette);
+        self.paint_counts.merge(other.paint_counts);
+
+        // Evict cursors for peers that left. Must happen after user merge
+        // so the active set reflects both replicas' knowledge. WHY??
+        let active = self.users.value();
+        self.cursors.retain(|uid, _| active.contains(uid));
+
     }
 
+    /// Returns `true` when `self` is causally dominated by `other` across all fields.
     fn compare(&self, other: &Self) -> bool {
         self.clock.compare(&other.clock)
             && self
@@ -173,21 +271,193 @@ impl Crdt for CanvasDocument {
                 .cursors
                 .iter()
                 .all(|(k, r)| other.cursors.get(k).is_some_and(|o| r.compare(o)))
+            && self.palette.compare(&other.palette)
+            && self.paint_counts.compare(&other.paint_counts)
     }
 }
 
-/// Client-facing view. Strips CRDT metadata (timestamps, node ids,
-/// vector clock) so the browser only sees pixel colors and active users.
+/// Custom serde for `Vec<(PixelCoord, LWWRegister<Rgba>)>` used in [`CanvasDelta`].
+///
+/// Mirrors [`pixel_map_serde`] but for the delta's flat list rather than a map.
+mod pixel_vec_serde {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(v: &Vec<(PixelCoord, LWWRegister<Rgba>)>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(v.len()))?;
+        for pair in v {
+            seq.serialize_element(pair)?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<Vec<(PixelCoord, LWWRegister<Rgba>)>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<(PixelCoord, LWWRegister<Rgba>)>::deserialize(d)
+    }
+}
+
+/// Delta payload for a [`CanvasDocument`].
+///
+/// Each field carries the corresponding CRDT's delta — empty / `None`
+/// when nothing changed there. The receiver applies a `CanvasDelta` via
+/// [`CanvasDocument::merge_delta`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CanvasDelta {
+    /// VectorClock entries that advanced. Receivers absorb this into their
+    /// own clock so subsequent local writes carry strictly higher
+    /// timestamps.
+    pub clock: <VectorClock as DeltaCrdt>::Delta,
+    /// Pixels whose LWWRegister timestamp exceeds the receiver's view for
+    /// the writing node. Carried as `(coord, LWWRegister)` pairs.
+    #[serde(with = "pixel_vec_serde")]
+    pub pixels: Vec<(PixelCoord, LWWRegister<Rgba>)>,
+    /// ORSet delta for the active-user set; empty when no users joined or left.
+    pub users: ORSetDelta<Uuid>,
+    /// Cursor registers that moved since `since`; empty when no cursors changed.
+    pub cursors: Vec<(Uuid, LWWRegister<PixelCoord>)>,
+    /// ORSet delta for the palette; empty when no colors were added or removed.
+    pub palette: ORSetDelta<Rgba>,
+    /// GCounter delta; empty when no new paints occurred.
+    pub paint_counts: <GCounter as DeltaCrdt>::Delta,
+}
+
+impl DeltaCrdt for CanvasDocument {
+    type Delta = CanvasDelta;
+    type Version = VectorClock;
+
+    /// Returns the document's current [`VectorClock`] as its version identifier.
+    fn version(&self) -> Self::Version {
+        self.clock.clone()
+    }
+
+    /// Compute a minimal delta containing only the changes this document has
+    /// that `since` does not. Pass [`VectorClock::new`] to get a full-state delta.
+    /// 
+    /// Each field filters independently against the same [`VectorClock`]
+    /// frontier. This works because ORSet tag sequences are sourced from
+    /// the document clock — one version covers all fields.
+    fn delta_since(&self, since: &Self::Version) -> Self::Delta {
+        let pixels: Vec<(PixelCoord, LWWRegister<Rgba>)> = self
+            .pixels
+            .iter()
+            .filter_map(|(coord, reg)| {
+                let known = since.get(&reg.node_id());
+                (reg.timestamp() > known).then(|| (*coord, reg.clone()))
+            })
+            .collect();
+
+        let cursors: Vec<(Uuid, LWWRegister<PixelCoord>)> = self
+            .cursors
+            .iter()
+            .filter_map(|(uid, reg)| {
+                let known = since.get(&reg.node_id());
+                (reg.timestamp() > known).then(|| (*uid, reg.clone()))
+            })
+            .collect();
+
+        // ORSet tag seqs are sourced from the same VectorClock the document
+        // tracks, so its frontier-as-HashMap is `since.clock`.
+        let or_set_version: std::collections::HashMap<NodeId, u64> = since.value();
+
+        CanvasDelta {
+            clock: self.clock.delta_since(since),
+            pixels,
+            users: self.users.delta_since(&or_set_version),
+            cursors,
+            palette: self.palette.delta_since(&or_set_version),
+            paint_counts: self.paint_counts.delta_since(&or_set_version),
+        }
+    }
+
+    /// Apply a previously computed delta, advancing all affected CRDTs.
+    fn merge_delta(&mut self, delta: Self::Delta) {
+        self.clock.merge_delta(delta.clock);
+
+        for ((x, y), reg) in delta.pixels {
+            match self.pixels.entry((x, y)) {
+                Entry::Occupied(mut e) => e.get_mut().merge(reg),
+                Entry::Vacant(e) => {
+                    e.insert(reg);
+                }
+            }
+        }
+
+        self.users.merge_delta(delta.users);
+
+        for (uid, reg) in delta.cursors {
+            match self.cursors.entry(uid) {
+                Entry::Occupied(mut e) => e.get_mut().merge(reg),
+                Entry::Vacant(e) => {
+                    e.insert(reg);
+                }
+            }
+        }
+
+        self.palette.merge_delta(delta.palette);
+        self.paint_counts.merge_delta(delta.paint_counts);
+    }
+
+    fn is_empty_delta(delta: &Self::Delta) -> bool {
+        // Clock delta is the primary signal. Per-field checks are defense
+        // in depth: a mutation that skips the clock still produces a
+        // truthy delta and avoids a silent WS skip.
+        VectorClock::is_empty_delta(&delta.clock)
+            && delta.pixels.is_empty()
+            && delta.cursors.is_empty()
+            && ORSet::<Uuid>::is_empty_delta(&delta.users)
+            && ORSet::<Rgba>::is_empty_delta(&delta.palette)
+            && GCounter::is_empty_delta(&delta.paint_counts)
+    }
+
+    /// Returns `true` when `current` causally dominates `other` — i.e., `current`
+    /// has observed everything `other` has, so it is safe to apply a delta computed
+    /// against `other` as a baseline without gaps.
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        current.dominates(other)
+    }
+}
+
+/// Client-facing snapshot of the full canvas. Strips CRDT metadata (timestamps, node ids, vector clock).
+///
+/// Sent once over WebSocket on connect, then superseded by [`CanvasDeltaView`] patches.
 #[derive(Serialize)]
 pub struct CanvasView {
+    /// All painted pixels keyed as `"x,y"` strings; unpainted pixels are absent (default white).
     pub pixels: HashMap<String, [u8; 4]>,
-    pub users: Vec<String>,
+    /// UUIDs of currently connected peers, sorted for stable display.
+    pub active_peers: Vec<String>,
+    /// Shared palette colors in sorted order.
+    pub palette: Vec<[u8; 4]>,
+    /// Cumulative paint operations across all peers.
+    pub paint_total: u64,
+    /// Per-peer pixel ownership counts, sorted descending.
+    pub leaderboard: Vec<LeaderboardEntry>,
+    /// Latest cursor position per peer, keyed by UUID string.
+    pub cursors: HashMap<String, [u8; 2]>,
+}
+
+/// One row in the pixel-ownership leaderboard.
+#[derive(Serialize)]
+pub struct LeaderboardEntry {
+    /// UUID of the peer that owns these pixels (last-write winner).
+    pub peer_id: String,
+    /// Number of canvas pixels currently owned by this peer.
+    pub pixels: u64,
 }
 
 impl From<&CanvasDocument> for CanvasView {
+    /// Project a full [`CanvasDocument`] into a serializable snapshot, dropping all CRDT internals.
     fn from(doc: &CanvasDocument) -> Self {
-        let mut users: Vec<String> = doc.active_users().iter().map(|u| u.to_string()).collect();
-        users.sort();
+        let mut active_peers: Vec<String> =
+            doc.active_users().iter().map(|u| u.to_string()).collect();
+        active_peers.sort();
         Self {
             pixels: doc
                 .pixels
@@ -197,7 +467,134 @@ impl From<&CanvasDocument> for CanvasView {
                     (format!("{x},{y}"), [a, b, c, d])
                 })
                 .collect(),
-            users,
+            active_peers,
+            palette: doc
+                .palette_colors()
+                .into_iter()
+                .map(|(r, g, b, a)| [r, g, b, a])
+                .collect(),
+            paint_total: doc.paint_counts.value(),
+            leaderboard: doc
+                .ownership_leaderboard()
+                .into_iter()
+                .map(|(id, n)| LeaderboardEntry {
+                    peer_id: id.to_string(),
+                    pixels: n,
+                })
+                .collect(),
+            cursors: {
+                let active = doc.active_users();
+                doc.cursors
+                    .iter()
+                    .filter(|(uid, _)| active.contains(*uid))
+                    .map(|(uid, reg)| {
+                        let (x, y) = reg.value();
+                        (uid.to_string(), [x, y])
+                    })
+                    .collect()
+            },
+        }
+    }
+}
+
+/// Sparse client-facing view of a [`CanvasDelta`].
+///
+/// `pixels` lists only the coordinates whose colour changed since the
+/// receiver's last update. Each `Option` field is `Some` only when the
+/// corresponding derived view actually changed; the frontend should
+/// treat `None` as "no change, keep what you had".
+#[derive(Serialize)]
+pub struct CanvasDeltaView {
+    pub pixels: HashMap<String, [u8; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_peers: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub palette: Option<Vec<[u8; 4]>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paint_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leaderboard: Option<Vec<LeaderboardEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursors: Option<HashMap<String, [u8; 2]>>,
+}
+
+impl CanvasDeltaView {
+    /// Project a CRDT-level `CanvasDelta` against the new authoritative
+    /// document state, recomputing each derived view only when its
+    /// underlying CRDT actually changed.
+    pub fn project(delta: &CanvasDelta, doc: &CanvasDocument) -> Self {
+        let pixels = delta
+            .pixels
+            .iter()
+            .map(|((x, y), r)| {
+                let (a, b, c, d) = r.value();
+                (format!("{x},{y}"), [a, b, c, d])
+            })
+            .collect::<HashMap<_, _>>();
+
+        let active_peers = if ORSet::<Uuid>::is_empty_delta(&delta.users) {
+            None
+        } else {
+            let mut peers: Vec<String> = doc.active_users().iter().map(|u| u.to_string()).collect();
+            peers.sort();
+            Some(peers)
+        };
+
+        let palette = if ORSet::<Rgba>::is_empty_delta(&delta.palette) {
+            None
+        } else {
+            Some(
+                doc.palette_colors()
+                    .into_iter()
+                    .map(|(r, g, b, a)| [r, g, b, a])
+                    .collect(),
+            )
+        };
+
+        let paint_total = if GCounter::is_empty_delta(&delta.paint_counts) {
+            None
+        } else {
+            Some(doc.paint_counts.value())
+        };
+
+        // Leaderboard is derived from per-pixel ownership; any pixel change
+        // can shift it. Recompute and ship when pixels changed.
+        let leaderboard = if pixels.is_empty() {
+            None
+        } else {
+            Some(
+                doc.ownership_leaderboard()
+                    .into_iter()
+                    .map(|(id, n)| LeaderboardEntry {
+                        peer_id: id.to_string(),
+                        pixels: n,
+                    })
+                    .collect(),
+            )
+        };
+
+        let cursors = if delta.cursors.is_empty() {
+            None
+        } else {
+            Some(
+                delta
+                    .cursors
+                    .iter()
+                    .map(|(uid, reg)| {
+                        let (x, y) = reg.value();
+                        (uid.to_string(), [x, y])
+                    })
+                    .collect(),
+            )
+        };
+
+        Self {
+            pixels,
+            active_peers,
+            palette,
+            paint_total,
+            leaderboard,
+            cursors,
         }
     }
 }
@@ -252,16 +649,13 @@ mod tests {
         let mut a = CanvasDocument::new();
         let mut b = CanvasDocument::new();
 
-        // B paints 5 times on the same pixel.
         for _ in 0..5 {
             b.paint(0, 0, (255, 0, 0, 255), node(2));
         }
 
-        // A merges B's state, then paints once.
         a.merge(b);
         a.paint(0, 0, (0, 0, 255, 255), node(1));
 
-        // A painted after seeing B — A must win.
         assert_eq!(get_pixel(&a, 0, 0), (0, 0, 255, 255));
     }
 
@@ -309,5 +703,143 @@ mod tests {
         let mut b1 = peer_b.clone();
         b1.merge(peer_a.clone());
         assert!(b1.active_users().contains(&user));
+    }
+
+    #[test]
+    fn palette_add_and_colors() {
+        let mut d = CanvasDocument::new();
+        d.add_palette_color((255, 0, 0, 255), &node(1));
+        d.add_palette_color((0, 255, 0, 255), &node(1));
+        let colors = d.palette_colors();
+        assert_eq!(colors.len(), 2);
+        assert!(colors.contains(&(255, 0, 0, 255)));
+        assert!(colors.contains(&(0, 255, 0, 255)));
+    }
+
+    #[test]
+    fn paint_increments_paint_total() {
+        let mut d = CanvasDocument::new();
+        d.paint(0, 0, (1, 2, 3, 4), node(1));
+        d.paint(1, 1, (5, 6, 7, 8), node(1));
+        assert_eq!(d.paint_counts.value(), 2);
+    }
+
+    #[test]
+    fn delta_since_empty_replays_full_state() {
+        let mut a = CanvasDocument::new();
+        a.paint(1, 2, (10, 20, 30, 40), node(1));
+        a.add_palette_color((255, 0, 0, 255), &node(1));
+
+        let delta = a.delta_since(&VectorClock::new());
+        let mut b = CanvasDocument::new();
+        b.merge_delta(delta);
+
+        assert_eq!(get_pixel(&b, 1, 2), (10, 20, 30, 40));
+        assert!(b.palette_colors().contains(&(255, 0, 0, 255)));
+    }
+
+    #[test]
+    fn delta_since_current_version_is_empty() {
+        let mut a = CanvasDocument::new();
+        a.paint(0, 0, (1, 2, 3, 4), node(1));
+        a.add_palette_color((10, 20, 30, 40), &node(1));
+
+        let delta = a.delta_since(&a.version());
+        assert!(
+            CanvasDocument::is_empty_delta(&delta),
+            "delta to self should be empty"
+        );
+    }
+
+    /// Apply a delta computed against B's version; B should converge to A.
+    #[test]
+    fn delta_catches_up_lagging_replica() {
+        let mut a = CanvasDocument::new();
+        let mut b = CanvasDocument::new();
+
+        a.paint(0, 0, (255, 0, 0, 255), node(1));
+        b.merge(a.clone()); // bring B current
+
+        // Now A pulls ahead.
+        a.paint(1, 1, (0, 255, 0, 255), node(1));
+        a.add_palette_color((0, 0, 255, 255), &node(1));
+
+        let delta = a.delta_since(&b.version());
+        b.merge_delta(delta);
+
+        assert_eq!(get_pixel(&b, 0, 0), (255, 0, 0, 255));
+        assert_eq!(get_pixel(&b, 1, 1), (0, 255, 0, 255));
+        assert!(b.palette_colors().contains(&(0, 0, 255, 255)));
+    }
+
+    #[test]
+    fn delta_is_idempotent() {
+        let mut a = CanvasDocument::new();
+        a.paint(3, 4, (5, 6, 7, 8), node(1));
+        let delta = a.delta_since(&VectorClock::new());
+
+        let mut b = CanvasDocument::new();
+        b.merge_delta(delta.clone());
+        let snapshot = b.clone();
+        b.merge_delta(delta);
+
+        // Re-applying the same delta leaves the state unchanged.
+        assert_eq!(get_pixel(&b, 3, 4), get_pixel(&snapshot, 3, 4));
+        assert_eq!(b.paint_counts.value(), snapshot.paint_counts.value());
+    }
+
+    #[test]
+    fn delta_propagates_tombstones() {
+        let mut a = CanvasDocument::new();
+        a.add_palette_color((1, 2, 3, 4), &node(1));
+        a.add_palette_color((5, 6, 7, 8), &node(1));
+        a.remove_palette_color(&(1, 2, 3, 4));
+
+        let mut b = CanvasDocument::new();
+        b.merge_delta(a.delta_since(&VectorClock::new()));
+
+        assert!(b.palette_colors().contains(&(5, 6, 7, 8)));
+        assert!(!b.palette_colors().contains(&(1, 2, 3, 4)));
+    }
+
+    /// Regression: after any palette removal, `is_empty_delta` was
+    /// permanently false because `ORSet::delta_since` shipped the full
+    /// tombstone set every time. That silently disabled the WS skip in
+    /// `api.rs::handle_ws`. Verify the skip is active again.
+    #[test]
+    fn idle_delta_after_palette_removal_is_empty() {
+        let mut a = CanvasDocument::new();
+        a.add_palette_color((1, 2, 3, 4), &node(1));
+        a.remove_palette_color(&(1, 2, 3, 4));
+
+        // Re-querying at the post-removal version must produce an empty
+        // delta — nothing has happened since.
+        let delta = a.delta_since(&a.version());
+        assert!(
+            CanvasDocument::is_empty_delta(&delta),
+            "idle delta after tombstone must be empty so WS skip fires"
+        );
+    }
+
+    /// `version_includes` powers the partition-heal drop in the gossip
+    /// engine: a delta is only safe to apply when the receiver's state
+    /// already knows everything the sender's `since` baseline asserts.
+    #[test]
+    fn version_includes_detects_lagging_receiver() {
+        let mut sender = CanvasDocument::new();
+        sender.paint(0, 0, (1, 2, 3, 4), node(1));
+        sender.paint(1, 1, (5, 6, 7, 8), node(1));
+
+        let fresh_receiver_version = CanvasDocument::new().version();
+        assert!(
+            !CanvasDocument::version_includes(&fresh_receiver_version, &sender.version()),
+            "fresh receiver must NOT include sender's advanced baseline"
+        );
+
+        let caught_up_receiver = sender.clone();
+        assert!(
+            CanvasDocument::version_includes(&caught_up_receiver.version(), &sender.version()),
+            "caught-up receiver MUST include sender's baseline"
+        );
     }
 }

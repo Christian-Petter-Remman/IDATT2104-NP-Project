@@ -1,5 +1,5 @@
 use super::g_counter::GCounter;
-use crate::traits::{Crdt, NodeId};
+use crate::traits::{Crdt, DeltaCrdt, NodeId};
 
 /// Positive-Negative counter.
 ///
@@ -49,6 +49,56 @@ impl Crdt for PNCounter {
 
     fn compare(&self, other: &Self) -> bool {
         self.increments.compare(&other.increments) && self.decrements.compare(&other.decrements)
+    }
+}
+
+/// Per-side counter delta. `(increments_delta, decrements_delta)`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PNCounterDelta {
+    pub increments: <GCounter as DeltaCrdt>::Delta,
+    pub decrements: <GCounter as DeltaCrdt>::Delta,
+}
+
+/// Receiver-side version of a `PNCounter`: the two `GCounter` versions
+/// kept side by side.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PNCounterVersion {
+    pub increments: <GCounter as DeltaCrdt>::Version,
+    pub decrements: <GCounter as DeltaCrdt>::Version,
+}
+
+impl DeltaCrdt for PNCounter {
+    type Delta = PNCounterDelta;
+    type Version = PNCounterVersion;
+
+    fn version(&self) -> Self::Version {
+        PNCounterVersion {
+            increments: self.increments.version(),
+            decrements: self.decrements.version(),
+        }
+    }
+
+    fn delta_since(&self, since: &Self::Version) -> Self::Delta {
+        PNCounterDelta {
+            increments: self.increments.delta_since(&since.increments),
+            decrements: self.decrements.delta_since(&since.decrements),
+        }
+    }
+
+    fn merge_delta(&mut self, delta: Self::Delta) {
+        self.increments.merge_delta(delta.increments);
+        self.decrements.merge_delta(delta.decrements);
+    }
+
+    fn is_empty_delta(delta: &Self::Delta) -> bool {
+        GCounter::is_empty_delta(&delta.increments) && GCounter::is_empty_delta(&delta.decrements)
+    }
+
+    fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
+        GCounter::version_includes(&current.increments, &other.increments)
+            && GCounter::version_includes(&current.decrements, &other.decrements)
     }
 }
 

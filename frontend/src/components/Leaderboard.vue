@@ -17,6 +17,9 @@
 </template>
 
 <script setup>
+// Sidebar panel ranking peers by pixel ownership count (last-write-wins).
+// Highlights the local node's own entry. Data comes from the store's
+// leaderboard field, updated on every canvas delta that changes pixel ownership.
 import { useCanvasStore } from '../stores/canvas.js'
 const store = useCanvasStore()
 </script>

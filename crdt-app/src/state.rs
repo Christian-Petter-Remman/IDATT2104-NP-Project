@@ -45,10 +45,23 @@ use uuid::Uuid;
 /// document's internal [`VectorClock`] handles all timestamp concerns,
 /// it increments on local mutations, and merges automatically when
 /// remote state arrives via gossip.
+/// 
+/// The [`GossipEngine`] is created *after* `AppState` (it needs the
+/// [`watch::Receiver`] that `new` returns), so the engine handle is
+/// wired in via [`set_engine`](Self::set_engine) using a [`OnceLock`].
+/// This lets the API layer add bootstrap peers at runtime without
+/// holding a separate handle to the engine.
 pub struct AppState {
     node_id: Uuid,
     /// Single source of truth. Readers subscribe via `self.subscribe()`.
     canvas: watch::Sender<CanvasDocument>,
+    /// Gossip engine handle, wired in after construction via `set_engine`.
+    /// `OnceLock` because the engine depends on the watch channel that
+    /// `new` creates. A chicken-and-egg that `OnceLock` resolves
+    /// without runtime locking overhead after initialization.
+    /// It is only at start we need the lock, hence OnceLock
+    engine: OnceLock<Arc<GossipEngine>>,
+
 }
 
 impl AppState {
@@ -57,6 +70,7 @@ impl AppState {
         let state = Arc::new(Self {
             node_id,
             canvas: tx,
+            engine: OnceLock::new(),
         });
         (state, rx)
     }
@@ -64,6 +78,27 @@ impl AppState {
     pub fn node_id(&self) -> Uuid {
         self.node_id
     }
+
+
+    /// Wire the gossip engine in after construction.
+    ///
+    /// Called once from `main.rs` after `GossipEngine::run` returns.
+    /// Subsequent calls are silently ignored (`OnceLock` guarantees
+    /// at-most-once initialization).
+    pub fn set_engine(&self, engine: Arc<GossipEngine>) {
+        let _ = self.engine.set(engine);
+    }
+ 
+    /// Add a bootstrap peer to the gossip engine at runtime.
+    ///
+    /// No-op if the engine hasn't been wired in yet (shouldn't happen
+    /// in practice — `main.rs` calls `set_engine` before serving HTTP).
+    pub fn add_bootstrap(&self, addr: SocketAddr) {
+        if let Some(engine) = self.engine.get() {
+            engine.add_bootstrap(addr);
+        }
+    }
+
 
     /// Apply an arbitrary mutation to the canvas.
     ///
@@ -135,6 +170,7 @@ impl AppState {
     }
 }
 
+ 
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +235,12 @@ mod tests {
         state.mutate(|doc, id| doc.paint(0, 0, (1, 2, 3, 4), id));
         assert!(watcher.has_changed().unwrap());
     }
-}
  
+    #[test]
+    fn add_bootstrap_without_engine_is_noop() {
+        let (state, _rx) = make();
+        // Must not panic when engine not yet wired in.
+        state.add_bootstrap("127.0.0.1:9090".parse().unwrap());
+    }
+}
+
