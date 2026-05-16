@@ -60,10 +60,9 @@ pub struct AppState {
     /// Single source of truth. Readers subscribe via `self.subscribe()`.
     canvas: watch::Sender<CanvasDocument>,
     /// Gossip engine handle, wired in after construction via `set_engine`.
-    /// `OnceLock` because the engine depends on the watch channel that
-    /// `new` creates. A chicken-and-egg that `OnceLock` resolves
-    /// without runtime locking overhead after initialization.
-    /// It is only at start we need the lock, hence OnceLock
+    /// `OnceLock` because the engine needs the `watch::Receiver` that `new`
+    /// produces — the chicken-and-egg is resolved by initializing exactly once
+    /// with no runtime locking cost after startup.
     engine: OnceLock<Arc<GossipEngine>>,
     /// Count of active WebSocket browser sessions. Used to add this node
     /// to the users ORSet on the first connection and remove it on the last.
@@ -117,11 +116,10 @@ impl AppState {
  
     /// Remove any active users whose UUIDs appear in `tombstones`.
     ///
-    /// Bridges the gossip engine's peer registry (which tracks departed nodes)
-    /// with the `CanvasDocument.users` ORSet (which drives `active_peers` in
-    /// the frontend). Called periodically by a reconcile task in `main.rs` so
-    /// that both graceful Goodbye departures and crash/timeout evictions are
-    /// reflected in the CRDT state without modifying `crdt-net`.
+    /// The gossip engine's peer registry and the `CanvasDocument.users` ORSet
+    /// are otherwise unconnected: tombstoning a peer in the registry (on Goodbye
+    /// or repeated send failures) does not automatically evict them from the
+    /// CRDT state. This method bridges that gap.
     ///
     /// No-op — and no document mutation — when the intersection is empty.
     pub fn remove_departed_users(&self, tombstones: &HashSet<Uuid>) {

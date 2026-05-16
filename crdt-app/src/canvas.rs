@@ -147,12 +147,10 @@ impl CanvasDocument {
         self.users.insert(user, node_id, seq);
     }
 
-    /// Remove a peer from the active set and evict their cursor.
+    /// Remove a peer from the active set.
     ///
-    /// Increments the clock so the removal shows up as a new document
-    /// version. Without this, [`delta_since`](DeltaCrdt::delta_since)
-    /// returns an empty delta (clock unchanged) and connected browsers
-    /// never learn the peer left.
+    /// Increments the clock so the removal produces a non-empty delta;
+    /// without this connected browsers would never learn the peer left.
     pub fn remove_user(&mut self, user: &Uuid, node_id: NodeId) -> bool {
         self.clock.increment(node_id);
         self.cursors.remove(user);
@@ -164,10 +162,9 @@ impl CanvasDocument {
         self.users.value()
     }
 
-    /// Remove a cursor entry for a browser session that has disconnected.
+    /// Remove a browser session's cursor entry on disconnect.
     ///
-    /// Increments the clock so the removal is visible as a new document
-    /// version and propagates to other peers as a non-empty delta.
+    /// Increments the clock so the removal propagates as a non-empty delta.
     pub fn remove_cursor_entry(&mut self, user: &Uuid, node_id: NodeId) {
         self.clock.increment(node_id);
         self.cursors.remove(user);
@@ -229,19 +226,10 @@ impl Crdt for CanvasDocument {
 
     /// Merge `other` into `self` using each field's own CRDT merge rule.
     ///
-    /// Each of the field will merge inpepentendly.
     /// - Clock: element-wise max (Lamport rule per node).
     /// - Pixels / cursors: LWW — higher timestamp wins per coordinate.
     /// - Users / palette: ORSet — add-wins on concurrent add/remove.
     /// - Paint counts: GCounter — per-node max.
-    /// 
-    /// Cursor entries for peers no longer in the active user set are
-    /// evicted. The cursor `HashMap` has no tombstone mechanism, so
-    /// without this a departed peer's cursor would persist on remote
-    /// nodes indefinitely. Ideally the the ORset should have a garbage 
-    /// collection implementation to remove items from the tombsones,
-    /// but since it does not, we uses the hashmap so the cursors of 
-    /// disconnected peers don't persist indefinitely
     fn merge(&mut self, other: Self) {
         self.clock.merge(other.clock);
 

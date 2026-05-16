@@ -239,8 +239,8 @@ async fn static_handler(uri: axum::http::Uri) -> Response {
 /// `GET /ws` — upgrade to a WebSocket connection and hand off to [`handle_ws`].
 ///
 /// Accepts an optional `?id=<uuid>` query parameter. The frontend passes its
-/// stable `sessionStorage` UUID so that cursor keys and `active_peers` UUIDs
-/// share the same namespace. Falls back to a fresh UUID when absent or invalid.
+/// stable `sessionStorage` UUID for cursor ownership tracking. Falls back to a
+/// fresh UUID when absent or invalid.
 async fn ws_handler(
     State(s): State<Arc<AppState>>,
     Query(q): Query<WsQuery>,

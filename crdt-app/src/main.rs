@@ -67,11 +67,10 @@ async fn main() {
 
     state.set_engine(Arc::new(engine));
 
-    // Reconcile task: polls the gossip engine's tombstone set and evicts
-    // departed peer UUIDs from the CRDT user set so the frontend's
-    // active_peers list reflects actual gossip-level node presence.
-    // Runs at the same cadence as the gossip interval so departures are
-    // visible to browsers within one tick of the engine detecting them.
+    // Polls the gossip engine's tombstone set and evicts departed peer UUIDs
+    // from the CRDT user set. The engine's peer registry and the CanvasDocument
+    // user ORSet are otherwise unconnected, so neither graceful Goodbye messages
+    // nor crash evictions are reflected in active_peers without this.
     let state_reconcile = Arc::clone(&state);
     let reconcile_interval = Duration::from_millis(args.gossip_interval_ms);
     tokio::spawn(async move {
