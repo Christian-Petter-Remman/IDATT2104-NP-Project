@@ -49,6 +49,18 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+/// Composite version identifier for [`CanvasDocument`] deltas.
+///
+/// Carries the VectorClock (covers pixels, cursors, users, palette) and the
+/// GCounter state (paint counts) separately, because the two advance at
+/// different rates: the clock increments on every mutation while the counter
+/// only increments on paints.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CanvasVersion {
+    pub clock: VectorClock,
+    pub paint_counts: HashMap<NodeId, u64>,
+}
+
 /// RGBA color stored as four `u8` channels: red, green, blue, alpha.
 pub type Rgba = (u8, u8, u8, u8);
 /// Canvas pixel coordinate. Both axes are bounded to `[0, 255]` by the `u8` type.
@@ -327,11 +339,13 @@ pub struct CanvasDelta {
 
 impl DeltaCrdt for CanvasDocument {
     type Delta = CanvasDelta;
-    type Version = VectorClock;
+    type Version = CanvasVersion;
 
-    /// Returns the document's current [`VectorClock`] as its version identifier.
     fn version(&self) -> Self::Version {
-        self.clock.clone()
+        CanvasVersion {
+            clock: self.clock.clone(),
+            paint_counts: self.paint_counts.version(),
+        }
     }
 
     /// Compute a minimal delta containing only the changes this document has
@@ -345,7 +359,7 @@ impl DeltaCrdt for CanvasDocument {
             .pixels
             .iter()
             .filter_map(|(coord, reg)| {
-                let known = since.get(&reg.node_id());
+                let known = since.clock.get(&reg.node_id());
                 (reg.timestamp() > known).then(|| (*coord, reg.clone()))
             })
             .collect();
@@ -354,28 +368,20 @@ impl DeltaCrdt for CanvasDocument {
             .cursors
             .iter()
             .filter_map(|(uid, reg)| {
-                let known = since.get(&reg.node_id());
+                let known = since.clock.get(&reg.node_id());
                 (reg.timestamp() > known).then(|| (*uid, reg.clone()))
             })
             .collect();
 
-        // ORSet tag seqs are sourced from the same VectorClock the document
-        // tracks, so its frontier-as-HashMap is the right baseline for ORSets.
-        let or_set_version: std::collections::HashMap<NodeId, u64> = since.value();
+        let or_set_version: std::collections::HashMap<NodeId, u64> = since.clock.value();
 
         CanvasDelta {
-            clock: self.clock.delta_since(since),
+            clock: self.clock.delta_since(&since.clock),
             pixels,
             users: self.users.delta_since(&or_set_version),
             cursors,
             palette: self.palette.delta_since(&or_set_version),
-            // GCounter version type is paint counts, not VectorClock ticks.
-            // After a non-paint mutation bumps the clock, or_set_version may equal
-            // the GCounter value, making delta_since return empty and losing count
-            // updates via SyncDelta. Ship the full GCounter state every time instead.
-            paint_counts: self
-                .paint_counts
-                .delta_since(&std::collections::HashMap::new()),
+            paint_counts: self.paint_counts.delta_since(&since.paint_counts),
         }
     }
 
@@ -424,7 +430,7 @@ impl DeltaCrdt for CanvasDocument {
     /// has observed everything `other` has, so it is safe to apply a delta computed
     /// against `other` as a baseline without gaps.
     fn version_includes(current: &Self::Version, other: &Self::Version) -> bool {
-        current.dominates(other)
+        current.clock.dominates(&other.clock)
     }
 }
 
@@ -733,7 +739,7 @@ mod tests {
         a.paint(1, 2, (10, 20, 30, 40), node(1));
         a.add_palette_color((255, 0, 0, 255), &node(1));
 
-        let delta = a.delta_since(&VectorClock::new());
+        let delta = a.delta_since(&CanvasDocument::new().version());
         let mut b = CanvasDocument::new();
         b.merge_delta(delta);
 
@@ -779,7 +785,7 @@ mod tests {
     fn delta_is_idempotent() {
         let mut a = CanvasDocument::new();
         a.paint(3, 4, (5, 6, 7, 8), node(1));
-        let delta = a.delta_since(&VectorClock::new());
+        let delta = a.delta_since(&CanvasDocument::new().version());
 
         let mut b = CanvasDocument::new();
         b.merge_delta(delta.clone());
@@ -798,7 +804,7 @@ mod tests {
         a.add_palette_color((5, 6, 7, 8), &node(1));
         a.remove_palette_color(&(1, 2, 3, 4), node(1));
         let mut b = CanvasDocument::new();
-        b.merge_delta(a.delta_since(&VectorClock::new()));
+        b.merge_delta(a.delta_since(&CanvasDocument::new().version()));
 
         assert!(b.palette_colors().contains(&(5, 6, 7, 8)));
         assert!(!b.palette_colors().contains(&(1, 2, 3, 4)));

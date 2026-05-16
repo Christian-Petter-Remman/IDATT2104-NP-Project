@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use crdt_core::clocks::VectorClock;
+use crate::canvas::CanvasVersion;
 use crdt_core::DeltaCrdt;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -285,7 +285,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, user_id: Uuid) {
 
 /// Send the initial full-state snapshot. Returns the version it covers
 /// so the delta loop knows where to start, or `None` if the send fails.
-async fn send_snapshot(socket: &mut WebSocket, state: &AppState) -> Option<VectorClock> {
+async fn send_snapshot(socket: &mut WebSocket, state: &AppState) -> Option<CanvasVersion> {
     let (msg, version) = {
         let doc = state.canvas();
         let version = doc.version();
@@ -310,7 +310,7 @@ async fn send_snapshot(socket: &mut WebSocket, state: &AppState) -> Option<Vecto
 /// Borrows the document just long enough to compute the delta and
 /// serialize — the guard is always dropped before the `.await` on
 /// `socket.send`.
-async fn stream_deltas(socket: &mut WebSocket, state: &AppState, mut last_seen: VectorClock) {
+async fn stream_deltas(socket: &mut WebSocket, state: &AppState, mut last_seen: CanvasVersion) {
     let mut rx = state.subscribe();
     loop {
         tokio::select! {
