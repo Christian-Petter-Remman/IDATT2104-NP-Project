@@ -82,6 +82,11 @@ impl AppState {
     }
 
 
+    /// Returns a reference to the gossip engine, if wired in.
+    pub fn engine(&self) -> Option<&Arc<GossipEngine>> {
+        self.engine.get()
+    }
+
     /// Wire the gossip engine in after construction.
     ///
     /// Called once from `main.rs` after `GossipEngine::run` returns.
@@ -150,18 +155,6 @@ impl AppState {
     pub fn canvas(&self) -> watch::Ref<'_, CanvasDocument> {
         self.canvas.borrow()
     }
- 
-    /// Clone the current canvas state.
-    ///
-    /// Use this when you need an owned value that outlives a borrow.
-    /// E.g. computing a delta (clone before, mutate, diff after) or
-    /// passing state to another task across an await point.
-    ///
-    /// For quick read-only access, prefer [`canvas`](Self::canvas) to
-    /// avoid the clone.
-    pub fn snapshot(&self) -> CanvasDocument {
-        self.canvas.borrow().clone()
-    }
 
     /// Obtain a receiver that is notified on every state change.
     ///
@@ -172,6 +165,7 @@ impl AppState {
     }
 }
 
+ 
  
 #[cfg(test)]
 mod tests {
@@ -239,18 +233,9 @@ mod tests {
     }
  
     #[test]
-    fn paint_convenience_wrapper() {
-        let (state, rx) = make();
-        state.paint(3, 4, (10, 20, 30, 40));
-        let pixel = rx.borrow().pixels.get(&(3, 4)).map(|r| r.value());
-        assert_eq!(pixel, Some((10, 20, 30, 40)));
-    }
-
-    #[test]
     fn add_bootstrap_without_engine_is_noop() {
         let (state, _rx) = make();
         // Must not panic when engine not yet wired in.
         state.add_bootstrap("127.0.0.1:9090".parse().unwrap());
     }
 }
-

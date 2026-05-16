@@ -39,7 +39,8 @@
 //!
 //! Gossip between peers still uses full-state merge (simpler, handles
 //! partitions naturally).
-use crdt_core::clocks::{VectorClock, GCounter};
+use crdt_core::clocks::{VectorClock};
+use crdt_core::counters::GCounter;
 use crdt_core::registers::lww_register::LWWRegister;
 use crdt_core::sets::{ORSet, ORSetDelta};
 use crdt_core::traits::{Crdt, DeltaCrdt, NodeId};
@@ -803,8 +804,7 @@ mod tests {
         let mut a = CanvasDocument::new();
         a.add_palette_color((1, 2, 3, 4), &node(1));
         a.add_palette_color((5, 6, 7, 8), &node(1));
-        a.remove_palette_color(&(1, 2, 3, 4));
-
+        a.remove_palette_color(&(1, 2, 3, 4), node(1));
         let mut b = CanvasDocument::new();
         b.merge_delta(a.delta_since(&VectorClock::new()));
 
@@ -820,7 +820,7 @@ mod tests {
     fn idle_delta_after_palette_removal_is_empty() {
         let mut a = CanvasDocument::new();
         a.add_palette_color((1, 2, 3, 4), &node(1));
-        a.remove_palette_color(&(1, 2, 3, 4));
+        a.remove_palette_color(&(1, 2, 3, 4), node(1));
 
         // Re-querying at the post-removal version must produce an empty
         // delta — nothing has happened since.

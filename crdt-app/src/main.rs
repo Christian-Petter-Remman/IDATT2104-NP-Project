@@ -18,9 +18,8 @@ struct Args {
     /// Comma-separated bootstrap peers, e.g. 127.0.0.1:9091,127.0.0.1:9092
     #[arg(long, default_value = "")]
     peers: String,
-    /// Gossip tick interval in milliseconds. Lower = snappier
-    /// convergence, more network chatter. 200ms gives near-real-time
-    /// updates between peers on localhost.
+    /// Gossip tick interval in milliseconds. Lower values give snappier
+    /// convergence at the cost of more network chatter. 
     #[arg(long, default_value_t = 200)]
     gossip_interval_ms: u64,
 }
@@ -46,65 +45,64 @@ async fn main() {
         .filter(|s| !s.is_empty())
         .filter_map(|s| {
             s.parse()
-                .map_err(|_| tracing::warn!("invalid peer address ignored: {s}"))
+                .map_err(|e| tracing::warn!("ignoring invalid peer address {s}: {e}"))
                 .ok()
         })
         .collect();
 
-    let (state, local_rx) = AppState::new(node_id, http_addr.clone());
+    let (state, local_rx) = AppState::new(node_id);
     let (merged_tx, _) = broadcast::channel::<canvas::CanvasDocument>(64);
 
     let gossip_addr: std::net::SocketAddr =
         format!("0.0.0.0:{}", args.gossip_port).parse().unwrap();
     let config = GossipConfig::new(node_id, gossip_addr)
-        .with_peers(bootstrap)
+        .with_peers(bootstrap.clone())
         .with_interval(Duration::from_millis(args.gossip_interval_ms))
         .with_mdns(true);
 
-    let engine = Arc::new(
-        GossipEngine::run(config, local_rx, merged_tx.clone())
-            .await
-            .expect("gossip engine failed to start"),
+    let engine = GossipEngine::run(config, local_rx, merged_tx.clone())
+        .await
+        .expect("gossip engine failed to start");
+
+    state.set_engine(Arc::new(engine));
+
+    tracing::info!(
+        %node_id,
+        http = %http_addr,
+        gossip = %gossip_addr,
+        bootstraps = ?bootstrap,
+        interval_ms = args.gossip_interval_ms,
+        "node started"
     );
-    state.set_engine(Arc::clone(&engine));
 
     let state_clone = Arc::clone(&state);
     let mut merged_rx = merged_tx.subscribe();
     tokio::spawn(async move {
         while let Ok(incoming) = merged_rx.recv().await {
+            tracing::debug!("applying incoming gossip merge");
             state_clone.apply_gossip(incoming);
         }
-        tracing::warn!("gossip listener exited");
+        tracing::warn!("gossip forwarder exited — broadcast channel closed");
     });
 
-    // On ctrl-c, send a `Goodbye` so surviving peers learn we left
-    // immediately instead of waiting ~3s for failure-detection to fire.
-    // Without this, every disconnect goes through the slow path that
-    // logs `gossip send failed` bursts on the surviving terminals.
-    let engine_for_signal = Arc::clone(&engine);
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            tracing::info!("ctrl-c received, sending Goodbye");
-            engine_for_signal.graceful_shutdown().await;
-            // `process::exit(0)` skips Axum's graceful drain — any
-            // in-flight HTTP/WS request is severed mid-response.
-            // Acceptable for this demo binary; a production deployment
-            // would wire `axum::serve(...).with_graceful_shutdown(...)`
-            // to the same signal and wait for Axum to settle here.
-            std::process::exit(0);
-        }
-    });
-
-    tracing::info!("node {} http={} gossip={}", node_id, http_addr, gossip_addr);
+    let shutdown_signal = async {
+        tokio::signal::ctrl_c().await.ok();
+        tracing::info!("ctrl-c received, draining connections");
+    };
 
     let listener = tokio::net::TcpListener::bind(&http_addr)
         .await
-        .expect("failed to bind");
-    axum::serve(listener, api::router(state))
+        .expect("failed to bind HTTP listener");
+
+    axum::serve(listener, api::router(state.clone()))
+        .with_graceful_shutdown(shutdown_signal)
         .await
         .expect("server error");
-    // `engine` and its tasks tear down via `Arc` drop on process exit.
-    // The Ctrl+C path above already called `graceful_shutdown` before
-    // `process::exit`, so reaching this point means `axum::serve`
-    // returned on its own — unusual for this binary.
+
+    // Axum is drained, all WS handlers have finished their cleanup
+    tracing::info!("http server stopped, sending Goodbye to peers");
+    if let Some(engine) = state.engine() {
+        engine.graceful_shutdown().await;
+    }
+    tracing::info!("shutdown complete");
 }
