@@ -361,7 +361,7 @@ impl DeltaCrdt for CanvasDocument {
             .collect();
 
         // ORSet tag seqs are sourced from the same VectorClock the document
-        // tracks, so its frontier-as-HashMap is `since.clock`.
+        // tracks, so its frontier-as-HashMap is the right baseline for ORSets.
         let or_set_version: std::collections::HashMap<NodeId, u64> = since.value();
 
         CanvasDelta {
@@ -370,7 +370,11 @@ impl DeltaCrdt for CanvasDocument {
             users: self.users.delta_since(&or_set_version),
             cursors,
             palette: self.palette.delta_since(&or_set_version),
-            paint_counts: self.paint_counts.delta_since(&or_set_version),
+            // GCounter version type is paint counts, not VectorClock ticks.
+            // After a non-paint mutation bumps the clock, or_set_version may equal
+            // the GCounter value, making delta_since return empty and losing count
+            // updates via SyncDelta. Ship the full GCounter state every time instead.
+            paint_counts: self.paint_counts.delta_since(&std::collections::HashMap::new()),
         }
     }
 
@@ -406,12 +410,13 @@ impl DeltaCrdt for CanvasDocument {
         // Clock delta is the primary signal. Per-field checks are defense
         // in depth: a mutation that skips the clock still produces a
         // truthy delta and avoids a silent WS skip.
+        // GCounter is excluded: its delta is always the full state (empty-HashMap
+        // baseline) so is_empty_delta is never true there regardless of activity.
         VectorClock::is_empty_delta(&delta.clock)
             && delta.pixels.is_empty()
             && delta.cursors.is_empty()
             && ORSet::<Uuid>::is_empty_delta(&delta.users)
             && ORSet::<Rgba>::is_empty_delta(&delta.palette)
-            && GCounter::is_empty_delta(&delta.paint_counts)
     }
 
     /// Returns `true` when `current` causally dominates `other` — i.e., `current`
@@ -872,6 +877,43 @@ mod tests {
             view.paint_total,
             Some(2),
             "paint_total must be present even when a non-paint mutation preceded this delta"
+        );
+    }
+
+    /// Regression: after a non-paint mutation advances the VectorClock without
+    /// advancing the GCounter, the gossip engine updates `last_sent_version` to
+    /// the post-mutation clock. The next paint increments both clock and GCounter
+    /// by 1, but the GCounter value now equals the captured clock tick, so
+    /// `GCounter::delta_since(or_set_version)` returns empty and the paint count
+    /// never reaches the peer via SyncDelta.
+    #[test]
+    fn gcounter_propagates_via_delta_after_non_paint_mutation() {
+        let mut a = CanvasDocument::new();
+        let mut b = CanvasDocument::new();
+
+        // Initial paint — bring B in sync with A.
+        a.paint(0, 0, (1, 2, 3, 4), node(1));
+        b.merge(a.clone());
+
+        // Non-paint mutation: clock advances, GCounter stays.
+        a.update_cursor(Uuid::from_u128(1), 5, 5, node(1));
+
+        // Gossip tick — B absorbs cursor, last_sent_version advances to post-cursor clock.
+        let delta_cursor = a.delta_since(&b.version());
+        b.merge_delta(delta_cursor);
+        let b_version = b.version(); // baseline for the next SyncDelta
+
+        // A paints — GCounter goes from 1 to 2, clock goes from 2 to 3.
+        a.paint(1, 1, (5, 6, 7, 8), node(1));
+
+        // SyncDelta with the post-cursor baseline: or_set_version[A]=2, GCounter[A]=2 → 2>2 = false.
+        let delta = a.delta_since(&b_version);
+        b.merge_delta(delta);
+
+        assert_eq!(
+            b.paint_counts.value(),
+            2,
+            "GCounter must propagate via SyncDelta even when a non-paint mutation preceded it"
         );
     }
 
